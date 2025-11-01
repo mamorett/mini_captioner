@@ -61,6 +61,25 @@ st.markdown("""
         color: #000000;
         border-color: #dee2e6;
     }
+    
+    /* Navigation styling */
+    .nav-container {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        padding: 20px 0;
+        gap: 10px;
+    }
+    
+    .page-info {
+        text-align: center;
+        font-size: 1.1em;
+        font-weight: 500;
+        padding: 10px 20px;
+        background-color: #f0f2f6;
+        border-radius: 5px;
+        margin: 0 10px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -236,8 +255,72 @@ def display_image_with_description(image_path: Path, index: int, thumbnail_size:
         st.divider()
 
 
+def render_pagination(current_page: int, total_pages: int):
+    """
+    Render pagination controls at the bottom of the page.
+    
+    Args:
+        current_page: Current page number (1-indexed)
+        total_pages: Total number of pages
+    """
+    if total_pages <= 1:
+        return current_page
+    
+    st.markdown("---")
+    
+    # Create columns for navigation buttons
+    col1, col2, col3, col4, col5, col6, col7 = st.columns([1, 1, 1, 2, 1, 1, 1])
+    
+    with col1:
+        if st.button("⏮️ First", use_container_width=True, disabled=(current_page == 1)):
+            st.session_state.current_page = 1
+            st.rerun()
+    
+    with col2:
+        if st.button("◀️ Previous", use_container_width=True, disabled=(current_page == 1)):
+            st.session_state.current_page = current_page - 1
+            st.rerun()
+    
+    with col4:
+        # Page info in the center
+        st.markdown(
+            f'<div class="page-info">Page {current_page} of {total_pages}</div>',
+            unsafe_allow_html=True
+        )
+    
+    with col6:
+        if st.button("Next ▶️", use_container_width=True, disabled=(current_page == total_pages)):
+            st.session_state.current_page = current_page + 1
+            st.rerun()
+    
+    with col7:
+        if st.button("Last ⏭️", use_container_width=True, disabled=(current_page == total_pages)):
+            st.session_state.current_page = total_pages
+            st.rerun()
+    
+    # Direct page jump
+    with col4:
+        st.markdown("")  # Spacing
+        jump_to_page = st.selectbox(
+            "Jump to page:",
+            options=list(range(1, total_pages + 1)),
+            index=current_page - 1,
+            key="page_selector",
+            label_visibility="collapsed"
+        )
+        if jump_to_page != current_page:
+            st.session_state.current_page = jump_to_page
+            st.rerun()
+    
+    return st.session_state.get('current_page', current_page)
+
+
 def main():
     """Main function for the Streamlit app."""
+    
+    # Initialize session state for pagination
+    if 'current_page' not in st.session_state:
+        st.session_state.current_page = 1
     
     # Title and description
     st.title("🖼️ Image Gallery Viewer")
@@ -309,6 +392,14 @@ def main():
                 help="Adjust the maximum size of image thumbnails"
             )
             
+            # Items per page
+            items_per_page = st.selectbox(
+                "Items per page",
+                [5, 10, 20, 50, 100],
+                index=1,
+                key="items_per_page"
+            )
+            
             # Filter options
             st.markdown("---")
             st.markdown("### 🔍 Filters")
@@ -359,6 +450,15 @@ def main():
                     if read_text_file(get_text_file_path(img)) and 
                     search_query.lower() in read_text_file(get_text_file_path(img)).lower()
                 ]
+            
+            # Reset to page 1 if filters change
+            if 'last_filter' not in st.session_state:
+                st.session_state.last_filter = (filter_option, sort_option, search_query)
+            
+            current_filter = (filter_option, sort_option, search_query)
+            if st.session_state.last_filter != current_filter:
+                st.session_state.current_page = 1
+                st.session_state.last_filter = current_filter
         else:
             st.info("👈 Enter a directory path to get started")
             return
@@ -371,42 +471,31 @@ def main():
     # Display count
     st.markdown(f"### Showing {len(filtered_images)} image(s)")
     
-    # Pagination
-    items_per_page = st.selectbox(
-        "Items per page",
-        [5, 10, 20, 50, 100],
-        index=1,
-        key="items_per_page"
-    )
-    
+    # Calculate pagination
     total_pages = (len(filtered_images) - 1) // items_per_page + 1
     
-    if total_pages > 1:
-        page = st.number_input(
-            f"Page (1-{total_pages})",
-            min_value=1,
-            max_value=total_pages,
-            value=1,
-            step=1
-        )
-    else:
-        page = 1
+    # Ensure current page is valid
+    if st.session_state.current_page > total_pages:
+        st.session_state.current_page = total_pages
+    if st.session_state.current_page < 1:
+        st.session_state.current_page = 1
+    
+    current_page = st.session_state.current_page
     
     # Calculate start and end indices
-    start_idx = (page - 1) * items_per_page
+    start_idx = (current_page - 1) * items_per_page
     end_idx = min(start_idx + items_per_page, len(filtered_images))
+    
+    # Display current page info at top
+    if total_pages > 1:
+        st.info(f"📄 Page {current_page} of {total_pages} | Showing items {start_idx + 1}-{end_idx} of {len(filtered_images)}")
     
     # Display images with descriptions
     for idx, image_path in enumerate(filtered_images[start_idx:end_idx], start=start_idx):
         display_image_with_description(image_path, idx, thumbnail_size)
     
-    # Pagination info
-    if total_pages > 1:
-        st.markdown(f"---")
-        st.markdown(
-            f"<div style='text-align: center;'>Page {page} of {total_pages}</div>",
-            unsafe_allow_html=True
-        )
+    # Render pagination controls at the bottom
+    render_pagination(current_page, total_pages)
     
     # Footer
     st.markdown("---")

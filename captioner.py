@@ -12,28 +12,68 @@ from typing import List
 from dotenv import load_dotenv
 import openai
 from tqdm import tqdm
+from PIL import Image
+import io
 
 # Load environment variables from .env file
 load_dotenv()
 
 
-def encode_image_to_base64(image_path: str) -> str:
+def resize_image_to_megapixel(image_path: str, target_megapixels: float = 1.0) -> str:
     """
-    Encode an image file to base64 string.
+    Resize an image to target megapixels in memory and encode to base64.
+    Maintains aspect ratio and does NOT modify the original file.
     
     Args:
         image_path: Path to the image file
+        target_megapixels: Target size in megapixels (default: 1.0)
         
     Returns:
-        Base64 encoded string of the image
+        Base64 encoded string of the resized image
     """
-    with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode('utf-8')
+    # Open the image
+    image = Image.open(image_path)
+    
+    # Get current dimensions
+    original_width, original_height = image.size
+    current_megapixels = (original_width * original_height) / 1_000_000
+    
+    # Only resize if image is larger than target
+    if current_megapixels > target_megapixels:
+        # Calculate the scaling factor to achieve target megapixels
+        scale_factor = (target_megapixels / current_megapixels) ** 0.5
+        
+        # Calculate new dimensions maintaining aspect ratio
+        new_width = int(original_width * scale_factor)
+        new_height = int(original_height * scale_factor)
+        
+        # Resize using LANCZOS (high-quality downsampling)
+        image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    
+    # Convert to RGB if necessary (for PNG with transparency, WEBP, etc.)
+    if image.mode in ('RGBA', 'LA', 'P'):
+        # Create a white background
+        background = Image.new('RGB', image.size, (255, 255, 255))
+        if image.mode == 'P':
+            image = image.convert('RGBA')
+        background.paste(image, mask=image.split()[-1] if image.mode in ('RGBA', 'LA') else None)
+        image = background
+    elif image.mode != 'RGB':
+        image = image.convert('RGB')
+    
+    # Save to bytes buffer
+    buffer = io.BytesIO()
+    image.save(buffer, format='JPEG', quality=95)
+    buffer.seek(0)
+    
+    # Encode to base64
+    return base64.b64encode(buffer.read()).decode('utf-8')
 
 
 def get_image_mime_type(extension: str) -> str:
     """
     Get MIME type for image extension.
+    Since we're converting to JPEG for transmission, always return JPEG mime type.
     
     Args:
         extension: File extension (e.g., '.jpg', '.png')
@@ -41,13 +81,7 @@ def get_image_mime_type(extension: str) -> str:
     Returns:
         MIME type string
     """
-    mime_types = {
-        '.jpg': 'image/jpeg',
-        '.jpeg': 'image/jpeg',
-        '.png': 'image/png',
-        '.webp': 'image/webp'
-    }
-    return mime_types.get(extension.lower(), 'image/jpeg')
+    return 'image/jpeg'
 
 
 def get_output_path(image_path: Path, output_dir: Path = None) -> Path:
@@ -111,8 +145,8 @@ def process_image(
         Tuple of (success: bool, message: str)
     """
     try:
-        # Encode image to base64
-        base64_image = encode_image_to_base64(str(image_path))
+        # Resize image to 1 megapixel and encode to base64 (in memory only)
+        base64_image = resize_image_to_megapixel(str(image_path), target_megapixels=1.0)
         mime_type = get_image_mime_type(image_path.suffix)
         
         # Create the message with image
@@ -262,6 +296,7 @@ def main():
     else:
         print("Output directory: Same as input images")
     print(f"Override existing: {args.override}")
+    print(f"Image processing: Resizing to 1 megapixel (in memory, maintaining aspect ratio)")
     print(f"Prompt: {args.prompt}")
     print("-" * 60)
     

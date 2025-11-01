@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import List
 from dotenv import load_dotenv
 import openai
+from tqdm import tqdm
 
 # Load environment variables from .env file
 load_dotenv()
@@ -49,13 +50,52 @@ def get_image_mime_type(extension: str) -> str:
     return mime_types.get(extension.lower(), 'image/jpeg')
 
 
+def get_output_path(image_path: Path, output_dir: Path = None) -> Path:
+    """
+    Get the output path for a given image.
+    
+    Args:
+        image_path: Path to the image file
+        output_dir: Optional output directory
+        
+    Returns:
+        Path object for the output text file
+    """
+    if output_dir:
+        output_directory = output_dir
+    else:
+        output_directory = image_path.parent
+    
+    return output_directory / f"{image_path.stem}.txt"
+
+
+def should_process_image(image_path: Path, output_dir: Path, override: bool) -> bool:
+    """
+    Check if an image should be processed based on existence of output file.
+    
+    Args:
+        image_path: Path to the image file
+        output_dir: Output directory for text files
+        override: Whether to override existing files
+        
+    Returns:
+        True if image should be processed, False otherwise
+    """
+    if override:
+        return True
+    
+    output_path = get_output_path(image_path, output_dir)
+    return not output_path.exists()
+
+
 def process_image(
     image_path: Path,
     prompt: str,
     client: openai.OpenAI,
     model_name: str,
-    output_dir: Path = None
-) -> None:
+    output_dir: Path = None,
+    pbar: tqdm = None
+) -> tuple[bool, str]:
     """
     Process a single image with the vision model and save the result.
     
@@ -65,9 +105,11 @@ def process_image(
         client: OpenAI client instance
         model_name: Name of the vision model to use
         output_dir: Optional output directory for text files
+        pbar: Progress bar instance
+        
+    Returns:
+        Tuple of (success: bool, message: str)
     """
-    print(f"Processing: {image_path.name}")
-    
     try:
         # Encode image to base64
         base64_image = encode_image_to_base64(str(image_path))
@@ -113,10 +155,15 @@ def process_image(
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(result_text)
         
-        print(f"✓ Saved result to: {output_path.name}")
+        if pbar:
+            pbar.set_postfix_str(f"✓ {image_path.name}")
+        
+        return True, f"Saved to {output_path.name}"
         
     except Exception as e:
-        print(f"✗ Error processing {image_path.name}: {str(e)}")
+        if pbar:
+            pbar.set_postfix_str(f"✗ {image_path.name}")
+        return False, f"Error: {str(e)}"
 
 
 def get_image_files(directory: Path) -> List[Path]:
@@ -165,6 +212,11 @@ def main():
         default=None,
         help='Output directory for text files (default: same as image directory)'
     )
+    parser.add_argument(
+        '--override',
+        action='store_true',
+        help='Override existing text files (default: skip existing)'
+    )
     
     args = parser.parse_args()
     
@@ -209,25 +261,73 @@ def main():
         print(f"Output directory: {output_dir}")
     else:
         print("Output directory: Same as input images")
+    print(f"Override existing: {args.override}")
     print(f"Prompt: {args.prompt}")
     print("-" * 60)
     
     # Get all image files
-    image_files = get_image_files(input_dir)
+    all_image_files = get_image_files(input_dir)
     
-    if not image_files:
+    if not all_image_files:
         print(f"No supported image files found in '{args.directory}'")
         print("Supported formats: .webp, .png, .jpg, .jpeg")
         return
     
-    print(f"Found {len(image_files)} image(s) to process\n")
+    print(f"Found {len(all_image_files)} image(s) total")
     
-    # Process each image
-    for image_path in image_files:
-        process_image(image_path, args.prompt, client, model_name, output_dir)
+    # Filter images based on idempotency
+    images_to_process = [
+        img for img in all_image_files 
+        if should_process_image(img, output_dir, args.override)
+    ]
+    
+    skipped_count = len(all_image_files) - len(images_to_process)
+    
+    if skipped_count > 0:
+        print(f"Skipping {skipped_count} image(s) with existing output files")
+    
+    if not images_to_process:
+        print("\nNo images to process. All images have existing output files.")
+        print("Use --override to reprocess all images.")
+        return
+    
+    print(f"Processing {len(images_to_process)} image(s)\n")
+    
+    # Process each image with progress bar
+    success_count = 0
+    error_count = 0
+    
+    with tqdm(
+        total=len(images_to_process),
+        desc="Processing images",
+        unit="img",
+        bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}'
+    ) as pbar:
+        for image_path in images_to_process:
+            success, message = process_image(
+                image_path, 
+                args.prompt, 
+                client, 
+                model_name, 
+                output_dir,
+                pbar
+            )
+            
+            if success:
+                success_count += 1
+            else:
+                error_count += 1
+                tqdm.write(f"✗ {image_path.name}: {message}")
+            
+            pbar.update(1)
     
     print("-" * 60)
-    print("Processing complete!")
+    print(f"Processing complete!")
+    print(f"✓ Successfully processed: {success_count}")
+    if error_count > 0:
+        print(f"✗ Errors: {error_count}")
+    if skipped_count > 0:
+        print(f"⊘ Skipped (already exists): {skipped_count}")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
 Image Gallery Viewer with Descriptions
-A Streamlit app to view images and their corresponding text descriptions.
+A Streamlit app to view images and their corresponding descriptions from a Parquet database.
+
+Usage:
+    streamlit run viewer.py
+    streamlit run viewer.py -- --database /path/to/database.parquet
+    streamlit run viewer.py -- --db ./vision_ai.parquet
 """
 
 import streamlit as st
@@ -9,6 +14,9 @@ from pathlib import Path
 from PIL import Image
 import pyperclip
 import io
+import pandas as pd
+import sys
+import argparse
 
 # Page configuration
 st.set_page_config(
@@ -34,6 +42,17 @@ st.markdown("""
         word-wrap: break-word;
     }
     
+    .prompt-box {
+        background-color: #e7f3ff;
+        color: #000000;
+        padding: 10px;
+        border-radius: 5px;
+        border: 1px solid #b3d9ff;
+        margin-bottom: 10px;
+        font-size: 0.9em;
+        font-style: italic;
+    }
+    
     .stImage {
         border-radius: 8px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
@@ -46,6 +65,11 @@ st.markdown("""
             color: #ffffff;
             border-color: #404040;
         }
+        .prompt-box {
+            background-color: #1a3a52;
+            color: #ffffff;
+            border-color: #2a5a82;
+        }
     }
     
     /* Force dark mode if Streamlit is in dark theme */
@@ -55,11 +79,23 @@ st.markdown("""
         border-color: #404040;
     }
     
+    [data-testid="stAppViewContainer"][data-theme="dark"] .prompt-box {
+        background-color: #1a3a52;
+        color: #ffffff;
+        border-color: #2a5a82;
+    }
+    
     /* Force light mode if Streamlit is in light theme */
     [data-testid="stAppViewContainer"][data-theme="light"] .description-box {
         background-color: #f8f9fa;
         color: #000000;
         border-color: #dee2e6;
+    }
+    
+    [data-testid="stAppViewContainer"][data-theme="light"] .prompt-box {
+        background-color: #e7f3ff;
+        color: #000000;
+        border-color: #b3d9ff;
     }
     
     /* Navigation styling */
@@ -84,56 +120,88 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-def get_image_files(directory: Path) -> list:
+def parse_cli_args():
     """
-    Get all supported image files from a directory.
+    Parse command line arguments.
+    Streamlit passes arguments after '--' to the script.
+    
+    Returns:
+        Namespace with parsed arguments
+    """
+    parser = argparse.ArgumentParser(
+        description="Image Gallery Viewer with Parquet database support"
+    )
+    parser.add_argument(
+        '--database',
+        '--db',
+        dest='database',  # Add this to ensure both flags use the same destination
+        type=str,
+        default=None,
+        help='Path to Parquet database file'
+    )
+    
+    # Get all arguments after the script name
+    # Streamlit doesn't actually pass '--', just the arguments directly
+    args_to_parse = []
+    
+    # Check if we're running under streamlit
+    if 'streamlit' in sys.argv[0].lower() or any('streamlit' in arg.lower() for arg in sys.argv):
+        # Running via streamlit - arguments come directly after script name
+        script_found = False
+        for arg in sys.argv:
+            if script_found:
+                args_to_parse.append(arg)
+            elif arg.endswith('.py'):
+                script_found = True
+    else:
+        # Running directly - use normal argument parsing
+        args_to_parse = sys.argv[1:]
+    
+    # If no args found, return defaults
+    if not args_to_parse:
+        return parser.parse_args([])
+    
+    return parser.parse_args(args_to_parse)
+
+
+def load_parquet_db(parquet_path: Path) -> pd.DataFrame:
+    """
+    Load Parquet database.
     
     Args:
-        directory: Directory path to search
+        parquet_path: Path to the Parquet file
         
     Returns:
-        List of image file paths
+        DataFrame with image_path, prompt, and description columns
     """
-    supported_extensions = {'.webp', '.png', '.jpg', '.jpeg'}
-    image_files = []
-    
-    for ext in supported_extensions:
-        image_files.extend(directory.glob(f"*{ext}"))
-        image_files.extend(directory.glob(f"*{ext.upper()}"))
-    
-    return sorted(image_files)
+    try:
+        return pd.read_parquet(parquet_path)
+    except Exception as e:
+        st.error(f"Error loading Parquet database: {str(e)}")
+        return pd.DataFrame(columns=['image_path', 'prompt', 'description'])
 
 
-def get_text_file_path(image_path: Path) -> Path:
+def save_parquet_db(df: pd.DataFrame, parquet_path: Path) -> bool:
     """
-    Get the corresponding text file path for an image.
+    Save DataFrame to Parquet file.
     
     Args:
-        image_path: Path to the image file
+        df: DataFrame to save
+        parquet_path: Path to save the Parquet file
         
     Returns:
-        Path object for the text file
+        True if successful, False otherwise
     """
-    return image_path.parent / f"{image_path.stem}.txt"
-
-
-def read_text_file(text_path: Path) -> str:
-    """
-    Read content from a text file.
-    
-    Args:
-        text_path: Path to the text file
+    try:
+        # Ensure parent directory exists
+        parquet_path.parent.mkdir(parents=True, exist_ok=True)
         
-    Returns:
-        Content of the text file or None if not found
-    """
-    if text_path.exists():
-        try:
-            with open(text_path, 'r', encoding='utf-8') as f:
-                return f.read()
-        except Exception as e:
-            return f"Error reading file: {str(e)}"
-    return None
+        # Save to Parquet
+        df.to_parquet(parquet_path, index=False, engine='pyarrow')
+        return True
+    except Exception as e:
+        st.error(f"Error saving Parquet database: {str(e)}")
+        return False
 
 
 def create_thumbnail(image_path: Path, max_size: int = 300):
@@ -162,17 +230,24 @@ def create_thumbnail(image_path: Path, max_size: int = 300):
         return None
 
 
-def display_image_with_description(image_path: Path, index: int, thumbnail_size: int = 300):
+def display_image_with_description(row: pd.Series, index: int, thumbnail_size: int = 300, df_key: str = "main_df"):
     """
     Display an image with its description in a card-like layout.
     
     Args:
-        image_path: Path to the image file
+        row: Pandas Series with image_path, prompt, and description
         index: Index for unique key generation
         thumbnail_size: Size for the thumbnail
+        df_key: Key for the dataframe in session state
     """
-    text_path = get_text_file_path(image_path)
-    description = read_text_file(text_path)
+    image_path = Path(row['image_path'])
+    prompt = row['prompt']
+    description = row['description']
+    
+    # Initialize editing state for this entry if not exists
+    edit_key = f"edit_mode_{index}"
+    if edit_key not in st.session_state:
+        st.session_state[edit_key] = False
     
     # Create a container for the image-description pair
     with st.container():
@@ -181,75 +256,149 @@ def display_image_with_description(image_path: Path, index: int, thumbnail_size:
         with col1:
             # Display thumbnail
             try:
-                # Load original image to get dimensions
-                original_image = Image.open(image_path)
-                width, height = original_image.size
-                file_size = image_path.stat().st_size / 1024  # KB
-                
-                # Create and display thumbnail
-                thumbnail = create_thumbnail(image_path, thumbnail_size)
-                if thumbnail:
-                    st.image(thumbnail, caption=None, width=thumbnail_size)
-                    st.caption(f"📁 {image_path.name}")
-                    st.caption(f"📐 {width}×{height} | {file_size:.1f} KB")
+                # Check if image exists
+                if not image_path.exists():
+                    st.error(f"❌ Image not found: {image_path.name}")
+                    st.caption(f"📁 {image_path}")
                 else:
-                    st.error("Could not load image")
+                    # Load original image to get dimensions
+                    original_image = Image.open(image_path)
+                    width, height = original_image.size
+                    file_size = image_path.stat().st_size / 1024  # KB
+                    
+                    # Create and display thumbnail
+                    thumbnail = create_thumbnail(image_path, thumbnail_size)
+                    if thumbnail:
+                        st.image(thumbnail, caption=None, width=thumbnail_size)
+                        st.caption(f"📁 {image_path.name}")
+                        st.caption(f"📐 {width}×{height} | {file_size:.1f} KB")
+                    else:
+                        st.error("Could not load image")
                     
             except Exception as e:
                 st.error(f"Error loading image: {str(e)}")
+                st.caption(f"📁 {image_path}")
         
         with col2:
+            # Display prompt
+            st.markdown("### Prompt")
+            st.markdown(
+                f'<div class="prompt-box">💬 {prompt}</div>',
+                unsafe_allow_html=True
+            )
+            
             # Display description
-            if description:
+            if description and pd.notna(description):
                 st.markdown("### Description")
                 
-                # Display the text with proper styling
-                st.markdown(
-                    f'<div class="description-box">{description}</div>',
-                    unsafe_allow_html=True
-                )
-                
-                st.markdown("")  # Spacing
-                
-                # Buttons row
-                btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 2])
-                
-                with btn_col1:
-                    # Copy button
-                    if st.button(f"📋 Copy", key=f"copy_{index}", use_container_width=True):
-                        try:
-                            pyperclip.copy(description)
-                            st.success("✓ Copied!", icon="✅")
-                        except:
-                            # Fallback: show in a text input for manual copy
-                            st.session_state[f'show_copy_{index}'] = True
-                
-                with btn_col2:
-                    # Download button for the text
-                    st.download_button(
-                        label="💾 Download",
-                        data=description,
-                        file_name=f"{image_path.stem}.txt",
-                        mime="text/plain",
-                        key=f"download_{index}",
-                        use_container_width=True
-                    )
-                
-                # Show copyable text input if pyperclip fails
-                if st.session_state.get(f'show_copy_{index}', False):
-                    st.text_area(
-                        "Select and copy:",
+                # Check if in edit mode
+                if st.session_state[edit_key]:
+                    # Edit mode - show text area
+                    edited_description = st.text_area(
+                        "Edit description:",
                         value=description,
-                        height=100,
-                        key=f"manual_copy_{index}"
+                        height=300,
+                        key=f"edit_textarea_{index}",
+                        label_visibility="collapsed"
                     )
+                    
+                    # Edit mode buttons
+                    btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 3])
+                    
+                    with btn_col1:
+                        if st.button("💾 Save", key=f"save_{index}", use_container_width=True, type="primary"):
+                            # Update the dataframe in session state
+                            df = st.session_state[df_key]
+                            # Find the row by image_path (more reliable than index)
+                            mask = df['image_path'] == str(image_path)
+                            df.loc[mask, 'description'] = edited_description
+                            st.session_state[df_key] = df
+                            
+                            # Save to file
+                            if save_parquet_db(df, st.session_state.parquet_path):
+                                st.session_state[edit_key] = False
+                                st.success("✓ Description saved!", icon="✅")
+                                st.rerun()
+                            else:
+                                st.error("Failed to save changes")
+                    
+                    with btn_col2:
+                        if st.button("❌ Cancel", key=f"cancel_{index}", use_container_width=True):
+                            st.session_state[edit_key] = False
+                            st.rerun()
+                    
+                    # Show character count
+                    st.caption(f"📝 {len(edited_description)} characters")
                 
-                # Show file info
-                text_file_size = text_path.stat().st_size if text_path.exists() else 0
-                st.caption(f"📄 {text_path.name} ({text_file_size} bytes)")
+                else:
+                    # View mode - show description with styling
+                    st.markdown(
+                        f'<div class="description-box">{description}</div>',
+                        unsafe_allow_html=True
+                    )
+                    
+                    st.markdown("")  # Spacing
+                    
+                    # Buttons row
+                    btn_col1, btn_col2, btn_col3, btn_col4, btn_col5 = st.columns([1, 1, 1, 1, 1])
+                    
+                    with btn_col1:
+                        # Edit button
+                        if st.button(f"✏️ Edit", key=f"edit_{index}", use_container_width=True):
+                            st.session_state[edit_key] = True
+                            st.rerun()
+                    
+                    with btn_col2:
+                        # Copy description button
+                        if st.button(f"📋 Copy Desc", key=f"copy_desc_{index}", use_container_width=True):
+                            try:
+                                pyperclip.copy(description)
+                                st.success("✓ Copied!", icon="✅")
+                            except:
+                                # Fallback: show in a text input for manual copy
+                                st.session_state[f'show_copy_{index}'] = True
+                    
+                    with btn_col3:
+                        # Copy prompt button
+                        if st.button(f"💬 Copy Prompt", key=f"copy_prompt_{index}", use_container_width=True):
+                            try:
+                                pyperclip.copy(prompt)
+                                st.success("✓ Copied!", icon="✅")
+                            except:
+                                st.session_state[f'show_copy_prompt_{index}'] = True
+                    
+                    with btn_col4:
+                        # Download button for the description
+                        st.download_button(
+                            label="💾 Download",
+                            data=description,
+                            file_name=f"{image_path.stem}.txt",
+                            mime="text/plain",
+                            key=f"download_{index}",
+                            use_container_width=True
+                        )
+                    
+                    # Show copyable text input if pyperclip fails
+                    if st.session_state.get(f'show_copy_{index}', False):
+                        st.text_area(
+                            "Select and copy description:",
+                            value=description,
+                            height=100,
+                            key=f"manual_copy_{index}"
+                        )
+                    
+                    if st.session_state.get(f'show_copy_prompt_{index}', False):
+                        st.text_area(
+                            "Select and copy prompt:",
+                            value=prompt,
+                            height=50,
+                            key=f"manual_copy_prompt_{index}"
+                        )
+                    
+                    # Show character count
+                    st.caption(f"📝 {len(description)} characters | Full path: {image_path}")
             else:
-                st.warning("⚠️ No description file found")
-                st.caption(f"Expected: {text_path.name}")
+                st.warning("⚠️ No description found in database")
         
         # Add a divider between entries
         st.divider()
@@ -301,84 +450,191 @@ def render_pagination(current_page: int, total_pages: int):
     # Direct page jump
     with col4:
         st.markdown("")  # Spacing
-        jump_to_page = st.selectbox(
-            "Jump to page:",
-            options=list(range(1, total_pages + 1)),
-            index=current_page - 1,
-            key="page_selector",
-            label_visibility="collapsed"
-        )
-        if jump_to_page != current_page:
-            st.session_state.current_page = jump_to_page
-            st.rerun()
+        if total_pages > 1:
+            jump_to_page = st.selectbox(
+                "Jump to page:",
+                options=list(range(1, total_pages + 1)),
+                index=current_page - 1,
+                key="page_selector",
+                label_visibility="collapsed"
+            )
+            if jump_to_page != current_page:
+                st.session_state.current_page = jump_to_page
+                st.rerun()
     
     return st.session_state.get('current_page', current_page)
+
+
+def apply_search_filter(df: pd.DataFrame, search_query: str, search_in: str) -> pd.DataFrame:
+    """
+    Apply search filter to the dataframe based on search query and search location.
+    
+    Args:
+        df: DataFrame to filter
+        search_query: Search query string
+        search_in: Where to search - "Filename OR Description", "Description", "Filename", "Prompt", "All"
+        
+    Returns:
+        Filtered DataFrame
+    """
+    if not search_query:
+        return df
+    
+    search_lower = search_query.lower()
+    
+    if search_in == "Filename OR Description":
+        # Extract filename from path
+        df_copy = df.copy()
+        df_copy['filename'] = df_copy['image_path'].apply(lambda x: Path(x).name.lower())
+        
+        # Search in filename OR description
+        mask = (
+            df_copy['filename'].str.contains(search_lower, na=False) |
+            df_copy['description'].fillna('').str.lower().str.contains(search_lower, na=False)
+        )
+        return df[mask]
+    
+    elif search_in == "Description":
+        mask = df['description'].fillna('').str.lower().str.contains(search_lower, na=False)
+        return df[mask]
+    
+    elif search_in == "Filename":
+        # Extract filename from path
+        df_copy = df.copy()
+        df_copy['filename'] = df_copy['image_path'].apply(lambda x: Path(x).name.lower())
+        mask = df_copy['filename'].str.contains(search_lower, na=False)
+        return df[mask]
+    
+    elif search_in == "Full Path":
+        mask = df['image_path'].str.lower().str.contains(search_lower, na=False)
+        return df[mask]
+    
+    elif search_in == "Prompt":
+        mask = df['prompt'].str.lower().str.contains(search_lower, na=False)
+        return df[mask]
+    
+    else:  # All
+        df_copy = df.copy()
+        df_copy['filename'] = df_copy['image_path'].apply(lambda x: Path(x).name.lower())
+        mask = (
+            df_copy['description'].fillna('').str.lower().str.contains(search_lower, na=False) |
+            df_copy['image_path'].str.lower().str.contains(search_lower, na=False) |
+            df_copy['prompt'].str.lower().str.contains(search_lower, na=False)
+        )
+        return df[mask]
 
 
 def main():
     """Main function for the Streamlit app."""
     
+    # Parse CLI arguments
+    cli_args = parse_cli_args()
+    
     # Initialize session state for pagination
     if 'current_page' not in st.session_state:
         st.session_state.current_page = 1
     
+    # Initialize session state for CLI database path
+    if 'cli_database_path' not in st.session_state:
+        st.session_state.cli_database_path = cli_args.database
+    
     # Title and description
     st.title("🖼️ Image Gallery Viewer")
-    st.markdown("View images and their AI-generated descriptions")
+    st.markdown("View images and their AI-generated descriptions from Parquet database")
     
-    # Sidebar for directory selection
+    # Sidebar for database selection
     with st.sidebar:
         st.header("⚙️ Settings")
         
-        # Directory input
-        directory_path = st.text_input(
-            "Directory Path",
-            value="./images",
-            help="Enter the path to the directory containing images and text files"
+        # Determine default database path
+        if st.session_state.cli_database_path:
+            default_db_path = st.session_state.cli_database_path
+            st.info(f"📌 Database set via CLI: {Path(default_db_path).name}")
+        else:
+            default_db_path = "./vision_ai.parquet"
+        
+        # Database file input
+        db_path = st.text_input(
+            "Parquet Database Path",
+            value=default_db_path,
+            help="Enter the path to the Parquet database file"
         )
         
         # Browse button helper
-        st.caption("💡 Tip: Enter the full or relative path to your image directory")
+        st.caption("💡 Tip: Enter the full or relative path to your Parquet database")
+        if st.session_state.cli_database_path:
+            st.caption("🔧 Database path was provided via CLI argument")
         
-        # Validate directory
-        if directory_path:
-            input_dir = Path(directory_path)
+        # Validate database
+        if db_path:
+            parquet_path = Path(db_path)
             
-            if not input_dir.exists():
-                st.error("❌ Directory does not exist")
+            if not parquet_path.exists():
+                st.error("❌ Database file does not exist")
                 return
             
-            if not input_dir.is_dir():
-                st.error("❌ Path is not a directory")
+            if not parquet_path.is_file():
+                st.error("❌ Path is not a file")
                 return
             
-            st.success("✓ Valid directory")
+            if parquet_path.suffix != '.parquet':
+                st.warning("⚠️ File does not have .parquet extension")
             
-            # Get image files
-            image_files = get_image_files(input_dir)
+            st.success("✓ Valid database file")
             
-            if not image_files:
-                st.warning("No images found in directory")
-                st.info("Supported formats: .webp, .png, .jpg, .jpeg")
+            # Store parquet path in session state
+            st.session_state.parquet_path = parquet_path
+            
+            # Load the Parquet database
+            with st.spinner("Loading database..."):
+                df = load_parquet_db(parquet_path)
+            
+            if df.empty:
+                st.warning("⚠️ Database is empty or could not be loaded")
                 return
             
-            # Count images with descriptions
-            images_with_desc = sum(
-                1 for img in image_files 
-                if get_text_file_path(img).exists()
-            )
+            # Check for required columns
+            required_columns = {'image_path', 'prompt', 'description'}
+            if not required_columns.issubset(df.columns):
+                st.error(f"❌ Database missing required columns. Found: {list(df.columns)}")
+                return
+            
+            # Store original dataframe in session state for editing
+            if 'main_df' not in st.session_state or st.session_state.get('last_db_path') != str(parquet_path):
+                st.session_state.main_df = df.copy()
+                st.session_state.last_db_path = str(parquet_path)
+            else:
+                # Use the stored dataframe which may have edits
+                df = st.session_state.main_df.copy()
+            
+            # Count images that exist
+            df['exists'] = df['image_path'].apply(lambda x: Path(x).exists())
+            images_exist = df['exists'].sum()
+            images_missing = len(df) - images_exist
             
             # Display statistics
             st.markdown("---")
             st.markdown("### 📊 Statistics")
             col1, col2 = st.columns(2)
             with col1:
-                st.metric("Total Images", len(image_files))
-                st.metric("With Descriptions", images_with_desc)
+                st.metric("Total Entries", len(df))
+                st.metric("Images Found", images_exist)
             with col2:
-                st.metric("Without Descriptions", len(image_files) - images_with_desc)
-                completion_pct = (images_with_desc / len(image_files) * 100) if image_files else 0
-                st.metric("Completion", f"{completion_pct:.0f}%")
+                st.metric("Images Missing", images_missing)
+                st.metric("Unique Prompts", df['prompt'].nunique())
+            
+            # Show file size and modification time
+            file_size = parquet_path.stat().st_size / 1024  # KB
+            if file_size > 1024:
+                file_size_str = f"{file_size/1024:.2f} MB"
+            else:
+                file_size_str = f"{file_size:.2f} KB"
+            
+            st.caption(f"💾 Database size: {file_size_str}")
+            
+            # Edit mode info
+            st.markdown("---")
+            st.info("✏️ Click 'Edit' on any description to modify it. Changes are saved to the database.")
             
             # Thumbnail size slider
             st.markdown("---")
@@ -404,75 +660,98 @@ def main():
             st.markdown("---")
             st.markdown("### 🔍 Filters")
             
-            filter_option = st.radio(
+            # Filter by image existence
+            existence_filter = st.radio(
                 "Show",
-                ["All Images", "With Descriptions Only", "Without Descriptions Only"],
+                ["All Entries", "Images Found Only", "Images Missing Only"],
                 index=0
             )
             
+            if existence_filter == "Images Found Only":
+                filtered_df = df[df['exists']].copy()
+            elif existence_filter == "Images Missing Only":
+                filtered_df = df[~df['exists']].copy()
+            else:
+                filtered_df = df.copy()
+            
+            # Filter by prompt
+            unique_prompts = sorted(df['prompt'].unique())
+            if len(unique_prompts) > 1:
+                selected_prompts = st.multiselect(
+                    "Filter by Prompt",
+                    options=["All"] + unique_prompts,
+                    default=["All"]
+                )
+                
+                if "All" not in selected_prompts:
+                    filtered_df = filtered_df[filtered_df['prompt'].isin(selected_prompts)]
+            
             # Sorting options
+            st.markdown("---")
+            st.markdown("### 📑 Sorting")
             sort_option = st.selectbox(
                 "Sort by",
-                ["Name (A-Z)", "Name (Z-A)", "Date Modified (Newest)", "Date Modified (Oldest)"]
+                ["Image Name (A-Z)", "Image Name (Z-A)", "Prompt (A-Z)", "Prompt (Z-A)"]
             )
             
-            # Apply filters
-            if filter_option == "With Descriptions Only":
-                filtered_images = [
-                    img for img in image_files 
-                    if get_text_file_path(img).exists()
-                ]
-            elif filter_option == "Without Descriptions Only":
-                filtered_images = [
-                    img for img in image_files 
-                    if not get_text_file_path(img).exists()
-                ]
-            else:
-                filtered_images = image_files
-            
             # Apply sorting
-            if sort_option == "Name (A-Z)":
-                filtered_images = sorted(filtered_images, key=lambda x: x.name)
-            elif sort_option == "Name (Z-A)":
-                filtered_images = sorted(filtered_images, key=lambda x: x.name, reverse=True)
-            elif sort_option == "Date Modified (Newest)":
-                filtered_images = sorted(filtered_images, key=lambda x: x.stat().st_mtime, reverse=True)
-            elif sort_option == "Date Modified (Oldest)":
-                filtered_images = sorted(filtered_images, key=lambda x: x.stat().st_mtime)
+            if sort_option == "Image Name (A-Z)":
+                filtered_df = filtered_df.sort_values('image_path')
+            elif sort_option == "Image Name (Z-A)":
+                filtered_df = filtered_df.sort_values('image_path', ascending=False)
+            elif sort_option == "Prompt (A-Z)":
+                filtered_df = filtered_df.sort_values('prompt')
+            elif sort_option == "Prompt (Z-A)":
+                filtered_df = filtered_df.sort_values('prompt', ascending=False)
             
             # Search functionality
             st.markdown("---")
-            search_query = st.text_input("🔎 Search in descriptions", "")
+            st.markdown("### 🔎 Search")
             
+            search_in = st.selectbox(
+                "Search in",
+                ["Filename OR Description", "Description", "Filename", "Full Path", "Prompt", "All"],
+                index=0,
+                help="Choose where to search. 'Filename OR Description' searches in both fields and returns results if found in either."
+            )
+            
+            search_query = st.text_input("Search", "", placeholder="Enter search term...")
+            
+            # Show search help based on selection
+            if search_in == "Filename OR Description":
+                st.caption("🔍 Will match if found in filename OR description (most common use case)")
+            elif search_in == "All":
+                st.caption("🔍 Will search across all fields: filename, description, full path, and prompt")
+            
+            # Apply search filter
+            filtered_df = apply_search_filter(filtered_df, search_query, search_in)
+            
+            # Show search results count if searching
             if search_query:
-                filtered_images = [
-                    img for img in filtered_images
-                    if read_text_file(get_text_file_path(img)) and 
-                    search_query.lower() in read_text_file(get_text_file_path(img)).lower()
-                ]
+                st.info(f"Found {len(filtered_df)} matching result(s)")
             
             # Reset to page 1 if filters change
             if 'last_filter' not in st.session_state:
-                st.session_state.last_filter = (filter_option, sort_option, search_query)
+                st.session_state.last_filter = (existence_filter, sort_option, search_query, search_in)
             
-            current_filter = (filter_option, sort_option, search_query)
+            current_filter = (existence_filter, sort_option, search_query, search_in)
             if st.session_state.last_filter != current_filter:
                 st.session_state.current_page = 1
                 st.session_state.last_filter = current_filter
         else:
-            st.info("👈 Enter a directory path to get started")
+            st.info("👈 Enter a database path to get started")
             return
     
     # Main content area
-    if not filtered_images:
-        st.info("No images match the current filter criteria")
+    if filtered_df.empty:
+        st.info("No entries match the current filter criteria")
         return
     
     # Display count
-    st.markdown(f"### Showing {len(filtered_images)} image(s)")
+    st.markdown(f"### Showing {len(filtered_df)} entry/entries")
     
     # Calculate pagination
-    total_pages = (len(filtered_images) - 1) // items_per_page + 1
+    total_pages = (len(filtered_df) - 1) // items_per_page + 1
     
     # Ensure current page is valid
     if st.session_state.current_page > total_pages:
@@ -484,15 +763,16 @@ def main():
     
     # Calculate start and end indices
     start_idx = (current_page - 1) * items_per_page
-    end_idx = min(start_idx + items_per_page, len(filtered_images))
+    end_idx = min(start_idx + items_per_page, len(filtered_df))
     
     # Display current page info at top
     if total_pages > 1:
-        st.info(f"📄 Page {current_page} of {total_pages} | Showing items {start_idx + 1}-{end_idx} of {len(filtered_images)}")
+        st.info(f"📄 Page {current_page} of {total_pages} | Showing items {start_idx + 1}-{end_idx} of {len(filtered_df)}")
     
     # Display images with descriptions
-    for idx, image_path in enumerate(filtered_images[start_idx:end_idx], start=start_idx):
-        display_image_with_description(image_path, idx, thumbnail_size)
+    page_df = filtered_df.iloc[start_idx:end_idx]
+    for idx, row in page_df.iterrows():
+        display_image_with_description(row, idx, thumbnail_size)
     
     # Render pagination controls at the bottom
     render_pagination(current_page, total_pages)
@@ -501,7 +781,7 @@ def main():
     st.markdown("---")
     st.markdown(
         "<div style='text-align: center; color: gray;'>"
-        "Image Gallery Viewer | Built with Streamlit"
+        "Image Gallery Viewer | Built with Streamlit | Powered by Parquet"
         "</div>",
         unsafe_allow_html=True
     )

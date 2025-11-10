@@ -2,6 +2,11 @@
 """
 Image Gallery Viewer with Descriptions
 A Streamlit app to view images and their corresponding descriptions from a Parquet database.
+
+Usage:
+    streamlit run viewer.py
+    streamlit run viewer.py -- --database /path/to/database.parquet
+    streamlit run viewer.py -- --db ./vision_ai.parquet
 """
 
 import streamlit as st
@@ -10,6 +15,8 @@ from PIL import Image
 import pyperclip
 import io
 import pandas as pd
+import sys
+import argparse
 
 # Page configuration
 st.set_page_config(
@@ -113,6 +120,50 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+def parse_cli_args():
+    """
+    Parse command line arguments.
+    Streamlit passes arguments after '--' to the script.
+    
+    Returns:
+        Namespace with parsed arguments
+    """
+    parser = argparse.ArgumentParser(
+        description="Image Gallery Viewer with Parquet database support"
+    )
+    parser.add_argument(
+        '--database',
+        '--db',
+        dest='database',  # Add this to ensure both flags use the same destination
+        type=str,
+        default=None,
+        help='Path to Parquet database file'
+    )
+    
+    # Get all arguments after the script name
+    # Streamlit doesn't actually pass '--', just the arguments directly
+    args_to_parse = []
+    
+    # Check if we're running under streamlit
+    if 'streamlit' in sys.argv[0].lower() or any('streamlit' in arg.lower() for arg in sys.argv):
+        # Running via streamlit - arguments come directly after script name
+        script_found = False
+        for arg in sys.argv:
+            if script_found:
+                args_to_parse.append(arg)
+            elif arg.endswith('.py'):
+                script_found = True
+    else:
+        # Running directly - use normal argument parsing
+        args_to_parse = sys.argv[1:]
+    
+    # If no args found, return defaults
+    if not args_to_parse:
+        return parser.parse_args([])
+    
+    return parser.parse_args(args_to_parse)
+
+
 def load_parquet_db(parquet_path: Path) -> pd.DataFrame:
     """
     Load Parquet database.
@@ -128,6 +179,29 @@ def load_parquet_db(parquet_path: Path) -> pd.DataFrame:
     except Exception as e:
         st.error(f"Error loading Parquet database: {str(e)}")
         return pd.DataFrame(columns=['image_path', 'prompt', 'description'])
+
+
+def save_parquet_db(df: pd.DataFrame, parquet_path: Path) -> bool:
+    """
+    Save DataFrame to Parquet file.
+    
+    Args:
+        df: DataFrame to save
+        parquet_path: Path to save the Parquet file
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        # Ensure parent directory exists
+        parquet_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Save to Parquet
+        df.to_parquet(parquet_path, index=False, engine='pyarrow')
+        return True
+    except Exception as e:
+        st.error(f"Error saving Parquet database: {str(e)}")
+        return False
 
 
 def create_thumbnail(image_path: Path, max_size: int = 300):
@@ -156,7 +230,7 @@ def create_thumbnail(image_path: Path, max_size: int = 300):
         return None
 
 
-def display_image_with_description(row: pd.Series, index: int, thumbnail_size: int = 300):
+def display_image_with_description(row: pd.Series, index: int, thumbnail_size: int = 300, df_key: str = "main_df"):
     """
     Display an image with its description in a card-like layout.
     
@@ -164,10 +238,16 @@ def display_image_with_description(row: pd.Series, index: int, thumbnail_size: i
         row: Pandas Series with image_path, prompt, and description
         index: Index for unique key generation
         thumbnail_size: Size for the thumbnail
+        df_key: Key for the dataframe in session state
     """
     image_path = Path(row['image_path'])
     prompt = row['prompt']
     description = row['description']
+    
+    # Initialize editing state for this entry if not exists
+    edit_key = f"edit_mode_{index}"
+    if edit_key not in st.session_state:
+        st.session_state[edit_key] = False
     
     # Create a container for the image-description pair
     with st.container():
@@ -211,66 +291,112 @@ def display_image_with_description(row: pd.Series, index: int, thumbnail_size: i
             if description and pd.notna(description):
                 st.markdown("### Description")
                 
-                # Display the text with proper styling
-                st.markdown(
-                    f'<div class="description-box">{description}</div>',
-                    unsafe_allow_html=True
-                )
-                
-                st.markdown("")  # Spacing
-                
-                # Buttons row
-                btn_col1, btn_col2, btn_col3, btn_col4 = st.columns([1, 1, 1, 2])
-                
-                with btn_col1:
-                    # Copy description button
-                    if st.button(f"📋 Copy Desc", key=f"copy_desc_{index}", use_container_width=True):
-                        try:
-                            pyperclip.copy(description)
-                            st.success("✓ Copied!", icon="✅")
-                        except:
-                            # Fallback: show in a text input for manual copy
-                            st.session_state[f'show_copy_{index}'] = True
-                
-                with btn_col2:
-                    # Copy prompt button
-                    if st.button(f"💬 Copy Prompt", key=f"copy_prompt_{index}", use_container_width=True):
-                        try:
-                            pyperclip.copy(prompt)
-                            st.success("✓ Copied!", icon="✅")
-                        except:
-                            st.session_state[f'show_copy_prompt_{index}'] = True
-                
-                with btn_col3:
-                    # Download button for the description
-                    st.download_button(
-                        label="💾 Download",
-                        data=description,
-                        file_name=f"{image_path.stem}.txt",
-                        mime="text/plain",
-                        key=f"download_{index}",
-                        use_container_width=True
-                    )
-                
-                # Show copyable text input if pyperclip fails
-                if st.session_state.get(f'show_copy_{index}', False):
-                    st.text_area(
-                        "Select and copy description:",
+                # Check if in edit mode
+                if st.session_state[edit_key]:
+                    # Edit mode - show text area
+                    edited_description = st.text_area(
+                        "Edit description:",
                         value=description,
-                        height=100,
-                        key=f"manual_copy_{index}"
+                        height=300,
+                        key=f"edit_textarea_{index}",
+                        label_visibility="collapsed"
                     )
+                    
+                    # Edit mode buttons
+                    btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 3])
+                    
+                    with btn_col1:
+                        if st.button("💾 Save", key=f"save_{index}", use_container_width=True, type="primary"):
+                            # Update the dataframe in session state
+                            df = st.session_state[df_key]
+                            # Find the row by image_path (more reliable than index)
+                            mask = df['image_path'] == str(image_path)
+                            df.loc[mask, 'description'] = edited_description
+                            st.session_state[df_key] = df
+                            
+                            # Save to file
+                            if save_parquet_db(df, st.session_state.parquet_path):
+                                st.session_state[edit_key] = False
+                                st.success("✓ Description saved!", icon="✅")
+                                st.rerun()
+                            else:
+                                st.error("Failed to save changes")
+                    
+                    with btn_col2:
+                        if st.button("❌ Cancel", key=f"cancel_{index}", use_container_width=True):
+                            st.session_state[edit_key] = False
+                            st.rerun()
+                    
+                    # Show character count
+                    st.caption(f"📝 {len(edited_description)} characters")
                 
-                if st.session_state.get(f'show_copy_prompt_{index}', False):
-                    st.text_area(
-                        "Select and copy prompt:",
-                        value=prompt,
-                        height=50,
-                        key=f"manual_copy_prompt_{index}"
+                else:
+                    # View mode - show description with styling
+                    st.markdown(
+                        f'<div class="description-box">{description}</div>',
+                        unsafe_allow_html=True
                     )
-                
-                # Show character count
-                st.caption(f"📝 {len(description)} characters | Full path: {image_path}")
+                    
+                    st.markdown("")  # Spacing
+                    
+                    # Buttons row
+                    btn_col1, btn_col2, btn_col3, btn_col4, btn_col5 = st.columns([1, 1, 1, 1, 1])
+                    
+                    with btn_col1:
+                        # Edit button
+                        if st.button(f"✏️ Edit", key=f"edit_{index}", use_container_width=True):
+                            st.session_state[edit_key] = True
+                            st.rerun()
+                    
+                    with btn_col2:
+                        # Copy description button
+                        if st.button(f"📋 Copy Desc", key=f"copy_desc_{index}", use_container_width=True):
+                            try:
+                                pyperclip.copy(description)
+                                st.success("✓ Copied!", icon="✅")
+                            except:
+                                # Fallback: show in a text input for manual copy
+                                st.session_state[f'show_copy_{index}'] = True
+                    
+                    with btn_col3:
+                        # Copy prompt button
+                        if st.button(f"💬 Copy Prompt", key=f"copy_prompt_{index}", use_container_width=True):
+                            try:
+                                pyperclip.copy(prompt)
+                                st.success("✓ Copied!", icon="✅")
+                            except:
+                                st.session_state[f'show_copy_prompt_{index}'] = True
+                    
+                    with btn_col4:
+                        # Download button for the description
+                        st.download_button(
+                            label="💾 Download",
+                            data=description,
+                            file_name=f"{image_path.stem}.txt",
+                            mime="text/plain",
+                            key=f"download_{index}",
+                            use_container_width=True
+                        )
+                    
+                    # Show copyable text input if pyperclip fails
+                    if st.session_state.get(f'show_copy_{index}', False):
+                        st.text_area(
+                            "Select and copy description:",
+                            value=description,
+                            height=100,
+                            key=f"manual_copy_{index}"
+                        )
+                    
+                    if st.session_state.get(f'show_copy_prompt_{index}', False):
+                        st.text_area(
+                            "Select and copy prompt:",
+                            value=prompt,
+                            height=50,
+                            key=f"manual_copy_prompt_{index}"
+                        )
+                    
+                    # Show character count
+                    st.caption(f"📝 {len(description)} characters | Full path: {image_path}")
             else:
                 st.warning("⚠️ No description found in database")
         
@@ -401,9 +527,16 @@ def apply_search_filter(df: pd.DataFrame, search_query: str, search_in: str) -> 
 def main():
     """Main function for the Streamlit app."""
     
+    # Parse CLI arguments
+    cli_args = parse_cli_args()
+    
     # Initialize session state for pagination
     if 'current_page' not in st.session_state:
         st.session_state.current_page = 1
+    
+    # Initialize session state for CLI database path
+    if 'cli_database_path' not in st.session_state:
+        st.session_state.cli_database_path = cli_args.database
     
     # Title and description
     st.title("🖼️ Image Gallery Viewer")
@@ -413,15 +546,24 @@ def main():
     with st.sidebar:
         st.header("⚙️ Settings")
         
+        # Determine default database path
+        if st.session_state.cli_database_path:
+            default_db_path = st.session_state.cli_database_path
+            st.info(f"📌 Database set via CLI: {Path(default_db_path).name}")
+        else:
+            default_db_path = "./vision_ai.parquet"
+        
         # Database file input
         db_path = st.text_input(
             "Parquet Database Path",
-            value="./vision_ai.parquet",
+            value=default_db_path,
             help="Enter the path to the Parquet database file"
         )
         
         # Browse button helper
         st.caption("💡 Tip: Enter the full or relative path to your Parquet database")
+        if st.session_state.cli_database_path:
+            st.caption("🔧 Database path was provided via CLI argument")
         
         # Validate database
         if db_path:
@@ -440,6 +582,9 @@ def main():
             
             st.success("✓ Valid database file")
             
+            # Store parquet path in session state
+            st.session_state.parquet_path = parquet_path
+            
             # Load the Parquet database
             with st.spinner("Loading database..."):
                 df = load_parquet_db(parquet_path)
@@ -453,6 +598,14 @@ def main():
             if not required_columns.issubset(df.columns):
                 st.error(f"❌ Database missing required columns. Found: {list(df.columns)}")
                 return
+            
+            # Store original dataframe in session state for editing
+            if 'main_df' not in st.session_state or st.session_state.get('last_db_path') != str(parquet_path):
+                st.session_state.main_df = df.copy()
+                st.session_state.last_db_path = str(parquet_path)
+            else:
+                # Use the stored dataframe which may have edits
+                df = st.session_state.main_df.copy()
             
             # Count images that exist
             df['exists'] = df['image_path'].apply(lambda x: Path(x).exists())
@@ -478,6 +631,10 @@ def main():
                 file_size_str = f"{file_size:.2f} KB"
             
             st.caption(f"💾 Database size: {file_size_str}")
+            
+            # Edit mode info
+            st.markdown("---")
+            st.info("✏️ Click 'Edit' on any description to modify it. Changes are saved to the database.")
             
             # Thumbnail size slider
             st.markdown("---")

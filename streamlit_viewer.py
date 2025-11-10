@@ -339,6 +339,65 @@ def render_pagination(current_page: int, total_pages: int):
     return st.session_state.get('current_page', current_page)
 
 
+def apply_search_filter(df: pd.DataFrame, search_query: str, search_in: str) -> pd.DataFrame:
+    """
+    Apply search filter to the dataframe based on search query and search location.
+    
+    Args:
+        df: DataFrame to filter
+        search_query: Search query string
+        search_in: Where to search - "Filename OR Description", "Description", "Filename", "Prompt", "All"
+        
+    Returns:
+        Filtered DataFrame
+    """
+    if not search_query:
+        return df
+    
+    search_lower = search_query.lower()
+    
+    if search_in == "Filename OR Description":
+        # Extract filename from path
+        df_copy = df.copy()
+        df_copy['filename'] = df_copy['image_path'].apply(lambda x: Path(x).name.lower())
+        
+        # Search in filename OR description
+        mask = (
+            df_copy['filename'].str.contains(search_lower, na=False) |
+            df_copy['description'].fillna('').str.lower().str.contains(search_lower, na=False)
+        )
+        return df[mask]
+    
+    elif search_in == "Description":
+        mask = df['description'].fillna('').str.lower().str.contains(search_lower, na=False)
+        return df[mask]
+    
+    elif search_in == "Filename":
+        # Extract filename from path
+        df_copy = df.copy()
+        df_copy['filename'] = df_copy['image_path'].apply(lambda x: Path(x).name.lower())
+        mask = df_copy['filename'].str.contains(search_lower, na=False)
+        return df[mask]
+    
+    elif search_in == "Full Path":
+        mask = df['image_path'].str.lower().str.contains(search_lower, na=False)
+        return df[mask]
+    
+    elif search_in == "Prompt":
+        mask = df['prompt'].str.lower().str.contains(search_lower, na=False)
+        return df[mask]
+    
+    else:  # All
+        df_copy = df.copy()
+        df_copy['filename'] = df_copy['image_path'].apply(lambda x: Path(x).name.lower())
+        mask = (
+            df_copy['description'].fillna('').str.lower().str.contains(search_lower, na=False) |
+            df_copy['image_path'].str.lower().str.contains(search_lower, na=False) |
+            df_copy['prompt'].str.lower().str.contains(search_lower, na=False)
+        )
+        return df[mask]
+
+
 def main():
     """Main function for the Streamlit app."""
     
@@ -494,33 +553,31 @@ def main():
             
             search_in = st.selectbox(
                 "Search in",
-                ["Description", "Image Path", "Prompt", "All"],
-                index=0
+                ["Filename OR Description", "Description", "Filename", "Full Path", "Prompt", "All"],
+                index=0,
+                help="Choose where to search. 'Filename OR Description' searches in both fields and returns results if found in either."
             )
             
-            search_query = st.text_input("Search", "")
+            search_query = st.text_input("Search", "", placeholder="Enter search term...")
             
+            # Show search help based on selection
+            if search_in == "Filename OR Description":
+                st.caption("🔍 Will match if found in filename OR description (most common use case)")
+            elif search_in == "All":
+                st.caption("🔍 Will search across all fields: filename, description, full path, and prompt")
+            
+            # Apply search filter
+            filtered_df = apply_search_filter(filtered_df, search_query, search_in)
+            
+            # Show search results count if searching
             if search_query:
-                search_lower = search_query.lower()
-                if search_in == "Description":
-                    mask = filtered_df['description'].fillna('').str.lower().str.contains(search_lower, na=False)
-                elif search_in == "Image Path":
-                    mask = filtered_df['image_path'].str.lower().str.contains(search_lower, na=False)
-                elif search_in == "Prompt":
-                    mask = filtered_df['prompt'].str.lower().str.contains(search_lower, na=False)
-                else:  # All
-                    mask = (
-                        filtered_df['description'].fillna('').str.lower().str.contains(search_lower, na=False) |
-                        filtered_df['image_path'].str.lower().str.contains(search_lower, na=False) |
-                        filtered_df['prompt'].str.lower().str.contains(search_lower, na=False)
-                    )
-                filtered_df = filtered_df[mask]
+                st.info(f"Found {len(filtered_df)} matching result(s)")
             
             # Reset to page 1 if filters change
             if 'last_filter' not in st.session_state:
-                st.session_state.last_filter = (existence_filter, sort_option, search_query)
+                st.session_state.last_filter = (existence_filter, sort_option, search_query, search_in)
             
-            current_filter = (existence_filter, sort_option, search_query)
+            current_filter = (existence_filter, sort_option, search_query, search_in)
             if st.session_state.last_filter != current_filter:
                 st.session_state.current_page = 1
                 st.session_state.last_filter = current_filter

@@ -17,6 +17,7 @@ import io
 import pandas as pd
 import sys
 import argparse
+from datetime import datetime
 
 # Page configuration
 st.set_page_config(
@@ -53,6 +54,16 @@ st.markdown("""
         font-style: italic;
     }
     
+    .timestamp-box {
+        background-color: #f0f0f0;
+        color: #000000;
+        padding: 8px;
+        border-radius: 5px;
+        border: 1px solid #d0d0d0;
+        margin-top: 10px;
+        font-size: 0.85em;
+    }
+    
     .stImage {
         border-radius: 8px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
@@ -70,6 +81,11 @@ st.markdown("""
             color: #ffffff;
             border-color: #2a5a82;
         }
+        .timestamp-box {
+            background-color: #2b2b2b;
+            color: #ffffff;
+            border-color: #404040;
+        }
     }
     
     /* Force dark mode if Streamlit is in dark theme */
@@ -85,6 +101,12 @@ st.markdown("""
         border-color: #2a5a82;
     }
     
+    [data-testid="stAppViewContainer"][data-theme="dark"] .timestamp-box {
+        background-color: #2b2b2b;
+        color: #ffffff;
+        border-color: #404040;
+    }
+    
     /* Force light mode if Streamlit is in light theme */
     [data-testid="stAppViewContainer"][data-theme="light"] .description-box {
         background-color: #f8f9fa;
@@ -96,6 +118,12 @@ st.markdown("""
         background-color: #e7f3ff;
         color: #000000;
         border-color: #b3d9ff;
+    }
+    
+    [data-testid="stAppViewContainer"][data-theme="light"] .timestamp-box {
+        background-color: #f0f0f0;
+        color: #000000;
+        border-color: #d0d0d0;
     }
     
     /* Navigation styling */
@@ -134,19 +162,15 @@ def parse_cli_args():
     parser.add_argument(
         '--database',
         '--db',
-        dest='database',  # Add this to ensure both flags use the same destination
+        dest='database',
         type=str,
         default=None,
         help='Path to Parquet database file'
     )
     
-    # Get all arguments after the script name
-    # Streamlit doesn't actually pass '--', just the arguments directly
     args_to_parse = []
     
-    # Check if we're running under streamlit
     if 'streamlit' in sys.argv[0].lower() or any('streamlit' in arg.lower() for arg in sys.argv):
-        # Running via streamlit - arguments come directly after script name
         script_found = False
         for arg in sys.argv:
             if script_found:
@@ -154,10 +178,8 @@ def parse_cli_args():
             elif arg.endswith('.py'):
                 script_found = True
     else:
-        # Running directly - use normal argument parsing
         args_to_parse = sys.argv[1:]
     
-    # If no args found, return defaults
     if not args_to_parse:
         return parser.parse_args([])
     
@@ -165,38 +187,27 @@ def parse_cli_args():
 
 
 def load_parquet_db(parquet_path: Path) -> pd.DataFrame:
-    """
-    Load Parquet database.
-    
-    Args:
-        parquet_path: Path to the Parquet file
-        
-    Returns:
-        DataFrame with image_path, prompt, and description columns
-    """
+    """Load Parquet database."""
     try:
-        return pd.read_parquet(parquet_path)
+        df = pd.read_parquet(parquet_path)
+        
+        # Ensure datetime columns are properly typed
+        if 'created_at' in df.columns:
+            df['created_at'] = pd.to_datetime(df['created_at'])
+        
+        if 'modified_at' in df.columns:
+            df['modified_at'] = pd.to_datetime(df['modified_at'])
+        
+        return df
     except Exception as e:
         st.error(f"Error loading Parquet database: {str(e)}")
-        return pd.DataFrame(columns=['image_path', 'prompt', 'description'])
+        return pd.DataFrame(columns=['image_path', 'prompt', 'description', 'created_at', 'modified_at'])
 
 
 def save_parquet_db(df: pd.DataFrame, parquet_path: Path) -> bool:
-    """
-    Save DataFrame to Parquet file.
-    
-    Args:
-        df: DataFrame to save
-        parquet_path: Path to save the Parquet file
-        
-    Returns:
-        True if successful, False otherwise
-    """
+    """Save DataFrame to Parquet file."""
     try:
-        # Ensure parent directory exists
         parquet_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Save to Parquet
         df.to_parquet(parquet_path, index=False, engine='pyarrow')
         return True
     except Exception as e:
@@ -205,68 +216,56 @@ def save_parquet_db(df: pd.DataFrame, parquet_path: Path) -> bool:
 
 
 def create_thumbnail(image_path: Path, max_size: int = 300):
-    """
-    Create a thumbnail of the image and return it as a PIL Image.
-    
-    Args:
-        image_path: Path to the image file
-        max_size: Maximum size for the thumbnail (width or height)
-        
-    Returns:
-        PIL Image object of the thumbnail
-    """
+    """Create a thumbnail of the image."""
     try:
         image = Image.open(image_path)
-        
-        # Make a copy to avoid modifying the original
         thumbnail = image.copy()
-        
-        # Calculate the thumbnail size maintaining aspect ratio
         thumbnail.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-        
         return thumbnail
     except Exception as e:
         st.error(f"Error creating thumbnail: {str(e)}")
         return None
 
 
-def display_image_with_description(row: pd.Series, index: int, thumbnail_size: int = 300, df_key: str = "main_df"):
-    """
-    Display an image with its description in a card-like layout.
+def format_datetime(dt) -> str:
+    """Format datetime for display."""
+    if pd.isna(dt):
+        return "N/A"
     
-    Args:
-        row: Pandas Series with image_path, prompt, and description
-        index: Index for unique key generation
-        thumbnail_size: Size for the thumbnail
-        df_key: Key for the dataframe in session state
-    """
+    try:
+        if isinstance(dt, str):
+            dt = pd.to_datetime(dt)
+        
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except:
+        return "N/A"
+
+
+def display_image_with_description(row: pd.Series, index: int, thumbnail_size: int = 300, df_key: str = "main_df"):
+    """Display an image with its description."""
     image_path = Path(row['image_path'])
     prompt = row['prompt']
     description = row['description']
+    created_at = row.get('created_at', None)
+    modified_at = row.get('modified_at', None)
     
-    # Initialize editing state for this entry if not exists
     edit_key = f"edit_mode_{index}"
     if edit_key not in st.session_state:
         st.session_state[edit_key] = False
     
-    # Create a container for the image-description pair
     with st.container():
         col1, col2 = st.columns([1, 2])
         
         with col1:
-            # Display thumbnail
             try:
-                # Check if image exists
                 if not image_path.exists():
                     st.error(f"❌ Image not found: {image_path.name}")
                     st.caption(f"📁 {image_path}")
                 else:
-                    # Load original image to get dimensions
                     original_image = Image.open(image_path)
                     width, height = original_image.size
-                    file_size = image_path.stat().st_size / 1024  # KB
+                    file_size = image_path.stat().st_size / 1024
                     
-                    # Create and display thumbnail
                     thumbnail = create_thumbnail(image_path, thumbnail_size)
                     if thumbnail:
                         st.image(thumbnail, caption=None, width=thumbnail_size)
@@ -280,20 +279,32 @@ def display_image_with_description(row: pd.Series, index: int, thumbnail_size: i
                 st.caption(f"📁 {image_path}")
         
         with col2:
-            # Display prompt
             st.markdown("### Prompt")
             st.markdown(
                 f'<div class="prompt-box">💬 {prompt}</div>',
                 unsafe_allow_html=True
             )
             
-            # Display description
+            # Display timestamps if available
+            if created_at is not None or modified_at is not None:
+                timestamp_text = ""
+                if created_at is not None and not pd.isna(created_at):
+                    timestamp_text += f"📅 Created: {format_datetime(created_at)}"
+                if modified_at is not None and not pd.isna(modified_at):
+                    if timestamp_text:
+                        timestamp_text += " | "
+                    timestamp_text += f"✏️ Modified: {format_datetime(modified_at)}"
+                
+                if timestamp_text:
+                    st.markdown(
+                        f'<div class="timestamp-box">{timestamp_text}</div>',
+                        unsafe_allow_html=True
+                    )
+            
             if description and pd.notna(description):
                 st.markdown("### Description")
                 
-                # Check if in edit mode
                 if st.session_state[edit_key]:
-                    # Edit mode - show text area
                     edited_description = st.text_area(
                         "Edit description:",
                         value=description,
@@ -302,19 +313,20 @@ def display_image_with_description(row: pd.Series, index: int, thumbnail_size: i
                         label_visibility="collapsed"
                     )
                     
-                    # Edit mode buttons
                     btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 3])
                     
                     with btn_col1:
                         if st.button("💾 Save", key=f"save_{index}", use_container_width=True, type="primary"):
-                            # Update the dataframe in session state
                             df = st.session_state[df_key]
-                            # Find the row by image_path (more reliable than index)
                             mask = df['image_path'] == str(image_path)
                             df.loc[mask, 'description'] = edited_description
+                            
+                            # Update modified_at timestamp
+                            if 'modified_at' in df.columns:
+                                df.loc[mask, 'modified_at'] = pd.Timestamp.now()
+                            
                             st.session_state[df_key] = df
                             
-                            # Save to file
                             if save_parquet_db(df, st.session_state.parquet_path):
                                 st.session_state[edit_key] = False
                                 st.success("✓ Description saved!", icon="✅")
@@ -327,48 +339,40 @@ def display_image_with_description(row: pd.Series, index: int, thumbnail_size: i
                             st.session_state[edit_key] = False
                             st.rerun()
                     
-                    # Show character count
                     st.caption(f"📝 {len(edited_description)} characters")
                 
                 else:
-                    # View mode - show description with styling
                     st.markdown(
                         f'<div class="description-box">{description}</div>',
                         unsafe_allow_html=True
                     )
                     
-                    st.markdown("")  # Spacing
+                    st.markdown("")
                     
-                    # Buttons row
                     btn_col1, btn_col2, btn_col3, btn_col4, btn_col5 = st.columns([1, 1, 1, 1, 1])
                     
                     with btn_col1:
-                        # Edit button
                         if st.button(f"✏️ Edit", key=f"edit_{index}", use_container_width=True):
                             st.session_state[edit_key] = True
                             st.rerun()
                     
                     with btn_col2:
-                        # Copy description button
                         if st.button(f"📋 Copy Desc", key=f"copy_desc_{index}", use_container_width=True):
                             try:
                                 pyperclip.copy(description)
-                                st.success("✓ Copied!", icon="✅")
+                                st.toast("✓ Description copied!", icon="✅")
                             except:
-                                # Fallback: show in a text input for manual copy
                                 st.session_state[f'show_copy_{index}'] = True
                     
                     with btn_col3:
-                        # Copy prompt button
                         if st.button(f"💬 Copy Prompt", key=f"copy_prompt_{index}", use_container_width=True):
                             try:
                                 pyperclip.copy(prompt)
-                                st.success("✓ Copied!", icon="✅")
+                                st.toast("✓ Prompt copied!", icon="✅")
                             except:
                                 st.session_state[f'show_copy_prompt_{index}'] = True
                     
                     with btn_col4:
-                        # Download button for the description
                         st.download_button(
                             label="💾 Download",
                             data=description,
@@ -378,7 +382,6 @@ def display_image_with_description(row: pd.Series, index: int, thumbnail_size: i
                             use_container_width=True
                         )
                     
-                    # Show copyable text input if pyperclip fails
                     if st.session_state.get(f'show_copy_{index}', False):
                         st.text_area(
                             "Select and copy description:",
@@ -395,29 +398,20 @@ def display_image_with_description(row: pd.Series, index: int, thumbnail_size: i
                             key=f"manual_copy_prompt_{index}"
                         )
                     
-                    # Show character count
                     st.caption(f"📝 {len(description)} characters | Full path: {image_path}")
             else:
                 st.warning("⚠️ No description found in database")
         
-        # Add a divider between entries
         st.divider()
 
 
 def render_pagination(current_page: int, total_pages: int):
-    """
-    Render pagination controls at the bottom of the page.
-    
-    Args:
-        current_page: Current page number (1-indexed)
-        total_pages: Total number of pages
-    """
+    """Render pagination controls."""
     if total_pages <= 1:
         return current_page
     
     st.markdown("---")
     
-    # Create columns for navigation buttons
     col1, col2, col3, col4, col5, col6, col7 = st.columns([1, 1, 1, 2, 1, 1, 1])
     
     with col1:
@@ -431,7 +425,6 @@ def render_pagination(current_page: int, total_pages: int):
             st.rerun()
     
     with col4:
-        # Page info in the center
         st.markdown(
             f'<div class="page-info">Page {current_page} of {total_pages}</div>',
             unsafe_allow_html=True
@@ -447,47 +440,35 @@ def render_pagination(current_page: int, total_pages: int):
             st.session_state.current_page = total_pages
             st.rerun()
     
-    # Direct page jump
     with col4:
-        st.markdown("")  # Spacing
+        st.markdown("")
         if total_pages > 1:
-            jump_to_page = st.selectbox(
+            page_input = st.number_input(
                 "Jump to page:",
-                options=list(range(1, total_pages + 1)),
-                index=current_page - 1,
-                key="page_selector",
+                min_value=1,
+                max_value=total_pages,
+                value=current_page,
+                step=1,
+                key=f"page_input_{current_page}_{total_pages}",
                 label_visibility="collapsed"
             )
-            if jump_to_page != current_page:
-                st.session_state.current_page = jump_to_page
+            if page_input != current_page:
+                st.session_state.current_page = page_input
                 st.rerun()
     
     return st.session_state.get('current_page', current_page)
 
 
 def apply_search_filter(df: pd.DataFrame, search_query: str, search_in: str) -> pd.DataFrame:
-    """
-    Apply search filter to the dataframe based on search query and search location.
-    
-    Args:
-        df: DataFrame to filter
-        search_query: Search query string
-        search_in: Where to search - "Filename OR Description", "Description", "Filename", "Prompt", "All"
-        
-    Returns:
-        Filtered DataFrame
-    """
+    """Apply search filter to the dataframe."""
     if not search_query:
         return df
     
     search_lower = search_query.lower()
     
     if search_in == "Filename OR Description":
-        # Extract filename from path
         df_copy = df.copy()
         df_copy['filename'] = df_copy['image_path'].apply(lambda x: Path(x).name.lower())
-        
-        # Search in filename OR description
         mask = (
             df_copy['filename'].str.contains(search_lower, na=False) |
             df_copy['description'].fillna('').str.lower().str.contains(search_lower, na=False)
@@ -499,7 +480,6 @@ def apply_search_filter(df: pd.DataFrame, search_query: str, search_in: str) -> 
         return df[mask]
     
     elif search_in == "Filename":
-        # Extract filename from path
         df_copy = df.copy()
         df_copy['filename'] = df_copy['image_path'].apply(lambda x: Path(x).name.lower())
         mask = df_copy['filename'].str.contains(search_lower, na=False)
@@ -524,48 +504,81 @@ def apply_search_filter(df: pd.DataFrame, search_query: str, search_in: str) -> 
         return df[mask]
 
 
+def apply_sorting(df: pd.DataFrame, sort_option: str) -> pd.DataFrame:
+    """Apply sorting to the dataframe."""
+    if sort_option == "Image Name (A-Z)":
+        return df.sort_values('image_path')
+    elif sort_option == "Image Name (Z-A)":
+        return df.sort_values('image_path', ascending=False)
+    elif sort_option == "Prompt (A-Z)":
+        return df.sort_values('prompt')
+    elif sort_option == "Prompt (Z-A)":
+        return df.sort_values('prompt', ascending=False)
+    elif sort_option == "Created Date (Newest First)":
+        if 'created_at' in df.columns:
+            # Put NaT values at the end
+            return df.sort_values('created_at', ascending=False, na_position='last')
+        else:
+            st.warning("⚠️ 'created_at' column not found in database")
+            return df
+    elif sort_option == "Created Date (Oldest First)":
+        if 'created_at' in df.columns:
+            # Put NaT values at the end
+            return df.sort_values('created_at', ascending=True, na_position='last')
+        else:
+            st.warning("⚠️ 'created_at' column not found in database")
+            return df
+    elif sort_option == "Modified Date (Newest First)":
+        if 'modified_at' in df.columns:
+            # Put NaT values at the end
+            return df.sort_values('modified_at', ascending=False, na_position='last')
+        else:
+            st.warning("⚠️ 'modified_at' column not found in database")
+            return df
+    elif sort_option == "Modified Date (Oldest First)":
+        if 'modified_at' in df.columns:
+            # Put NaT values at the end
+            return df.sort_values('modified_at', ascending=True, na_position='last')
+        else:
+            st.warning("⚠️ 'modified_at' column not found in database")
+            return df
+    else:
+        return df
+
+
 def main():
     """Main function for the Streamlit app."""
     
-    # Parse CLI arguments
     cli_args = parse_cli_args()
     
-    # Initialize session state for pagination
     if 'current_page' not in st.session_state:
         st.session_state.current_page = 1
     
-    # Initialize session state for CLI database path
     if 'cli_database_path' not in st.session_state:
         st.session_state.cli_database_path = cli_args.database
     
-    # Title and description
     st.title("🖼️ Image Gallery Viewer")
     st.markdown("View images and their AI-generated descriptions from Parquet database")
     
-    # Sidebar for database selection
     with st.sidebar:
         st.header("⚙️ Settings")
         
-        # Determine default database path
         if st.session_state.cli_database_path:
             default_db_path = st.session_state.cli_database_path
             st.info(f"📌 Database set via CLI: {Path(default_db_path).name}")
         else:
             default_db_path = "./vision_ai.parquet"
         
-        # Database file input
         db_path = st.text_input(
             "Parquet Database Path",
             value=default_db_path,
             help="Enter the path to the Parquet database file"
         )
         
-        # Browse button helper
         st.caption("💡 Tip: Enter the full or relative path to your Parquet database")
         if st.session_state.cli_database_path:
             st.caption("🔧 Database path was provided via CLI argument")
         
-        # Validate database
         if db_path:
             parquet_path = Path(db_path)
             
@@ -582,10 +595,8 @@ def main():
             
             st.success("✓ Valid database file")
             
-            # Store parquet path in session state
             st.session_state.parquet_path = parquet_path
             
-            # Load the Parquet database
             with st.spinner("Loading database..."):
                 df = load_parquet_db(parquet_path)
             
@@ -593,26 +604,25 @@ def main():
                 st.warning("⚠️ Database is empty or could not be loaded")
                 return
             
-            # Check for required columns
             required_columns = {'image_path', 'prompt', 'description'}
             if not required_columns.issubset(df.columns):
                 st.error(f"❌ Database missing required columns. Found: {list(df.columns)}")
                 return
             
-            # Store original dataframe in session state for editing
             if 'main_df' not in st.session_state or st.session_state.get('last_db_path') != str(parquet_path):
                 st.session_state.main_df = df.copy()
                 st.session_state.last_db_path = str(parquet_path)
             else:
-                # Use the stored dataframe which may have edits
                 df = st.session_state.main_df.copy()
             
-            # Count images that exist
             df['exists'] = df['image_path'].apply(lambda x: Path(x).exists())
             images_exist = df['exists'].sum()
             images_missing = len(df) - images_exist
             
-            # Display statistics
+            # Check for datetime columns
+            has_created_at = 'created_at' in df.columns
+            has_modified_at = 'modified_at' in df.columns
+            
             st.markdown("---")
             st.markdown("### 📊 Statistics")
             col1, col2 = st.columns(2)
@@ -623,8 +633,15 @@ def main():
                 st.metric("Images Missing", images_missing)
                 st.metric("Unique Prompts", df['prompt'].nunique())
             
-            # Show file size and modification time
-            file_size = parquet_path.stat().st_size / 1024  # KB
+            # Show datetime statistics if available
+            if has_created_at:
+                valid_created = df['created_at'].notna().sum()
+                if valid_created > 0:
+                    oldest = df['created_at'].min()
+                    newest = df['created_at'].max()
+                    st.caption(f"📅 Date range: {format_datetime(oldest)} to {format_datetime(newest)}")
+            
+            file_size = parquet_path.stat().st_size / 1024
             if file_size > 1024:
                 file_size_str = f"{file_size/1024:.2f} MB"
             else:
@@ -632,11 +649,9 @@ def main():
             
             st.caption(f"💾 Database size: {file_size_str}")
             
-            # Edit mode info
             st.markdown("---")
             st.info("✏️ Click 'Edit' on any description to modify it. Changes are saved to the database.")
             
-            # Thumbnail size slider
             st.markdown("---")
             st.markdown("### 🖼️ Display")
             thumbnail_size = st.slider(
@@ -648,7 +663,6 @@ def main():
                 help="Adjust the maximum size of image thumbnails"
             )
             
-            # Items per page
             items_per_page = st.selectbox(
                 "Items per page",
                 [5, 10, 20, 50, 100],
@@ -656,11 +670,9 @@ def main():
                 key="items_per_page"
             )
             
-            # Filter options
             st.markdown("---")
             st.markdown("### 🔍 Filters")
             
-            # Filter by image existence
             existence_filter = st.radio(
                 "Show",
                 ["All Entries", "Images Found Only", "Images Missing Only"],
@@ -674,7 +686,6 @@ def main():
             else:
                 filtered_df = df.copy()
             
-            # Filter by prompt
             unique_prompts = sorted(df['prompt'].unique())
             if len(unique_prompts) > 1:
                 selected_prompts = st.multiselect(
@@ -686,25 +697,36 @@ def main():
                 if "All" not in selected_prompts:
                     filtered_df = filtered_df[filtered_df['prompt'].isin(selected_prompts)]
             
-            # Sorting options
             st.markdown("---")
             st.markdown("### 📑 Sorting")
+            
+            # Build sort options dynamically based on available columns
+            sort_options = [
+                "Image Name (A-Z)",
+                "Image Name (Z-A)",
+                "Prompt (A-Z)",
+                "Prompt (Z-A)"
+            ]
+            
+            if has_created_at:
+                sort_options.extend([
+                    "Created Date (Newest First)",
+                    "Created Date (Oldest First)"
+                ])
+            
+            if has_modified_at:
+                sort_options.extend([
+                    "Modified Date (Newest First)",
+                    "Modified Date (Oldest First)"
+                ])
+            
             sort_option = st.selectbox(
                 "Sort by",
-                ["Image Name (A-Z)", "Image Name (Z-A)", "Prompt (A-Z)", "Prompt (Z-A)"]
+                sort_options
             )
             
-            # Apply sorting
-            if sort_option == "Image Name (A-Z)":
-                filtered_df = filtered_df.sort_values('image_path')
-            elif sort_option == "Image Name (Z-A)":
-                filtered_df = filtered_df.sort_values('image_path', ascending=False)
-            elif sort_option == "Prompt (A-Z)":
-                filtered_df = filtered_df.sort_values('prompt')
-            elif sort_option == "Prompt (Z-A)":
-                filtered_df = filtered_df.sort_values('prompt', ascending=False)
+            filtered_df = apply_sorting(filtered_df, sort_option)
             
-            # Search functionality
             st.markdown("---")
             st.markdown("### 🔎 Search")
             
@@ -712,48 +734,43 @@ def main():
                 "Search in",
                 ["Filename OR Description", "Description", "Filename", "Full Path", "Prompt", "All"],
                 index=0,
-                help="Choose where to search. 'Filename OR Description' searches in both fields and returns results if found in either."
+                help="Choose where to search."
             )
             
             search_query = st.text_input("Search", "", placeholder="Enter search term...")
             
-            # Show search help based on selection
             if search_in == "Filename OR Description":
-                st.caption("🔍 Will match if found in filename OR description (most common use case)")
+                st.caption("🔍 Will match if found in filename OR description")
             elif search_in == "All":
-                st.caption("🔍 Will search across all fields: filename, description, full path, and prompt")
+                st.caption("🔍 Will search across all fields")
             
-            # Apply search filter
             filtered_df = apply_search_filter(filtered_df, search_query, search_in)
             
-            # Show search results count if searching
             if search_query:
                 st.info(f"Found {len(filtered_df)} matching result(s)")
             
-            # Reset to page 1 if filters change
-            if 'last_filter' not in st.session_state:
-                st.session_state.last_filter = (existence_filter, sort_option, search_query, search_in)
-            
+            # Reset page only when filters actually change
             current_filter = (existence_filter, sort_option, search_query, search_in)
-            if st.session_state.last_filter != current_filter:
+            
+            if 'last_filter' not in st.session_state:
+                st.session_state.last_filter = current_filter
+            elif st.session_state.last_filter != current_filter:
                 st.session_state.current_page = 1
+                st.session_state.last_filter = current_filter
+            else:
                 st.session_state.last_filter = current_filter
         else:
             st.info("👈 Enter a database path to get started")
             return
     
-    # Main content area
     if filtered_df.empty:
         st.info("No entries match the current filter criteria")
         return
     
-    # Display count
     st.markdown(f"### Showing {len(filtered_df)} entry/entries")
     
-    # Calculate pagination
     total_pages = (len(filtered_df) - 1) // items_per_page + 1
     
-    # Ensure current page is valid
     if st.session_state.current_page > total_pages:
         st.session_state.current_page = total_pages
     if st.session_state.current_page < 1:
@@ -761,23 +778,18 @@ def main():
     
     current_page = st.session_state.current_page
     
-    # Calculate start and end indices
     start_idx = (current_page - 1) * items_per_page
     end_idx = min(start_idx + items_per_page, len(filtered_df))
     
-    # Display current page info at top
     if total_pages > 1:
         st.info(f"📄 Page {current_page} of {total_pages} | Showing items {start_idx + 1}-{end_idx} of {len(filtered_df)}")
     
-    # Display images with descriptions
     page_df = filtered_df.iloc[start_idx:end_idx]
     for idx, row in page_df.iterrows():
         display_image_with_description(row, idx, thumbnail_size)
     
-    # Render pagination controls at the bottom
     render_pagination(current_page, total_pages)
     
-    # Footer
     st.markdown("---")
     st.markdown(
         "<div style='text-align: center; color: gray;'>"

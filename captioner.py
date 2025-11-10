@@ -9,6 +9,7 @@ import base64
 import argparse
 from pathlib import Path
 from typing import List
+from datetime import datetime
 from dotenv import load_dotenv
 import openai
 from tqdm import tqdm
@@ -99,18 +100,34 @@ def get_image_mime_type(extension: str) -> str:
 def load_parquet_db(parquet_path: Path) -> pd.DataFrame:
     """
     Load existing Parquet database or create empty DataFrame with correct schema.
+    Automatically adds created_at and modified_at columns if they don't exist.
     
     Args:
         parquet_path: Path to the Parquet file
         
     Returns:
-        DataFrame with image_path, prompt, and description columns
+        DataFrame with image_path, prompt, description, created_at, and modified_at columns
     """
     if parquet_path.exists():
-        return pd.read_parquet(parquet_path)
+        df = pd.read_parquet(parquet_path)
+        
+        # Add created_at column if it doesn't exist
+        if 'created_at' not in df.columns:
+            # For existing entries, set created_at to a default past datetime
+            # or use current time to indicate migration
+            df['created_at'] = pd.Timestamp.now()
+            print(f"⚠ Added 'created_at' column to existing database (set to current time for existing entries)")
+        
+        # Add modified_at column if it doesn't exist
+        if 'modified_at' not in df.columns:
+            # For existing entries, set to None/NaT (not modified yet)
+            df['modified_at'] = pd.NaT
+            print(f"⚠ Added 'modified_at' column to existing database")
+        
+        return df
     else:
-        # Create empty DataFrame with correct schema
-        return pd.DataFrame(columns=['image_path', 'prompt', 'description'])
+        # Create empty DataFrame with correct schema including datetime columns
+        return pd.DataFrame(columns=['image_path', 'prompt', 'description', 'created_at', 'modified_at'])
 
 
 def save_parquet_db(df: pd.DataFrame, parquet_path: Path):
@@ -181,7 +198,7 @@ def signal_handler(sig, frame):
     sys.exit(0)
 
 
-def should_process_image(image_path: Path, df: pd.DataFrame, override: bool) -> bool:
+def should_process_image(image_path: Path, df: pd.DataFrame, override: bool) -> tuple[bool, dict]:
     """
     Check if an image should be processed based on existence in Parquet database.
     
@@ -191,14 +208,25 @@ def should_process_image(image_path: Path, df: pd.DataFrame, override: bool) -> 
         override: Whether to override existing entries
         
     Returns:
-        True if image should be processed, False otherwise
+        Tuple of (should_process: bool, existing_entry: dict or None)
+        If override is True and entry exists, returns the existing entry for datetime preservation
     """
-    if override:
-        return True
+    image_path_str = str(image_path)
     
     # Check if image_path already exists in database
-    image_path_str = str(image_path)
-    return image_path_str not in df['image_path'].values
+    existing_mask = df['image_path'] == image_path_str
+    
+    if existing_mask.any():
+        existing_entry = df[existing_mask].iloc[0].to_dict()
+        if override:
+            # Process it, but preserve the created_at timestamp
+            return True, existing_entry
+        else:
+            # Skip it
+            return False, None
+    else:
+        # New entry
+        return True, None
 
 
 def process_image(
@@ -206,8 +234,9 @@ def process_image(
     prompt: str,
     client: openai.OpenAI,
     model_name: str,
+    existing_entry: dict = None,
     pbar: tqdm = None
-) -> tuple[bool, str, str]:
+) -> tuple[bool, str, str, dict]:
     """
     Process a single image with the vision model.
     
@@ -216,10 +245,11 @@ def process_image(
         prompt: Prompt to send to the vision model
         client: OpenAI client instance
         model_name: Name of the vision model to use
+        existing_entry: Existing database entry (if overriding), used to preserve created_at
         pbar: Progress bar instance
         
     Returns:
-        Tuple of (success: bool, message: str, description: str)
+        Tuple of (success: bool, message: str, description: str, timestamps: dict)
     """
     try:
         # Resize image to 1 megapixel and encode to base64 (in memory only)
@@ -252,15 +282,28 @@ def process_image(
         # Extract the response text
         result_text = response.choices[0].message.content
         
+        # Prepare timestamps
+        current_time = pd.Timestamp.now()
+        timestamps = {}
+        
+        if existing_entry:
+            # Override mode: preserve created_at, update modified_at
+            timestamps['created_at'] = existing_entry.get('created_at', current_time)
+            timestamps['modified_at'] = current_time
+        else:
+            # New entry: set created_at, leave modified_at as NaT
+            timestamps['created_at'] = current_time
+            timestamps['modified_at'] = pd.NaT
+        
         if pbar:
             pbar.set_postfix_str(f"✓ {image_path.name}")
         
-        return True, "Success", result_text
+        return True, "Success", result_text, timestamps
         
     except Exception as e:
         if pbar:
             pbar.set_postfix_str(f"✗ {image_path.name}")
-        return False, f"Error: {str(e)}", ""
+        return False, f"Error: {str(e)}", "", {}
 
 
 def get_image_files(directory: Path) -> List[Path]:
@@ -352,7 +395,7 @@ def main():
     parquet_path = Path(args.database).resolve()
     override_mode = args.override
     
-    # Load existing Parquet database
+    # Load existing Parquet database (will add datetime columns if missing)
     db_df = load_parquet_db(parquet_path)
     
     # Initialize OpenAI client with custom endpoint
@@ -382,11 +425,16 @@ def main():
     
     print(f"Found {len(all_image_files)} image(s) total")
     
-    # Filter images based on idempotency
-    images_to_process = [
-        img for img in all_image_files 
-        if should_process_image(img, db_df, args.override)
-    ]
+    # Filter images based on idempotency and collect existing entries for override mode
+    images_to_process = []
+    image_existing_entries = {}
+    
+    for img in all_image_files:
+        should_process, existing_entry = should_process_image(img, db_df, args.override)
+        if should_process:
+            images_to_process.append(img)
+            if existing_entry:
+                image_existing_entries[str(img)] = existing_entry
     
     skipped_count = len(all_image_files) - len(images_to_process)
     
@@ -412,21 +460,27 @@ def main():
         bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}'
     ) as pbar:
         for image_path in images_to_process:
-            success, message, description = process_image(
+            # Get existing entry if in override mode
+            existing_entry = image_existing_entries.get(str(image_path))
+            
+            success, message, description, timestamps = process_image(
                 image_path, 
                 args.prompt, 
                 client, 
                 model_name,
+                existing_entry,
                 pbar
             )
             
             if success:
                 success_count += 1
-                # Add new entry
+                # Add new entry with timestamps
                 new_entries.append({
                     'image_path': str(image_path),
                     'prompt': args.prompt,
-                    'description': description
+                    'description': description,
+                    'created_at': timestamps['created_at'],
+                    'modified_at': timestamps['modified_at']
                 })
             else:
                 error_count += 1

@@ -701,29 +701,35 @@ def main():
             st.markdown("### 📑 Sorting")
             
             # Build sort options dynamically based on available columns
-            sort_options = [
-                "Image Name (A-Z)",
-                "Image Name (Z-A)",
-                "Prompt (A-Z)",
-                "Prompt (Z-A)"
-            ]
-            
+            sort_options = []
+
+            # Add created date options first if available
             if has_created_at:
                 sort_options.extend([
                     "Created Date (Newest First)",
                     "Created Date (Oldest First)"
                 ])
-            
+
+            # Then add other options
+            sort_options.extend([
+                "Image Name (A-Z)",
+                "Image Name (Z-A)",
+                "Prompt (A-Z)",
+                "Prompt (Z-A)"
+            ])
+
             if has_modified_at:
                 sort_options.extend([
                     "Modified Date (Newest First)",
                     "Modified Date (Oldest First)"
                 ])
-            
+
             sort_option = st.selectbox(
                 "Sort by",
-                sort_options
+                sort_options,
+                index=0  # Will default to "Created Date (Newest First)" if has_created_at is True
             )
+
             
             filtered_df = apply_sorting(filtered_df, sort_option)
             

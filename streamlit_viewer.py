@@ -17,6 +17,7 @@ import io
 import pandas as pd
 import sys
 import argparse
+from datetime import datetime
 
 # Page configuration
 st.set_page_config(
@@ -53,6 +54,16 @@ st.markdown("""
         font-style: italic;
     }
     
+    .timestamp-box {
+        background-color: #f0f0f0;
+        color: #000000;
+        padding: 8px;
+        border-radius: 5px;
+        border: 1px solid #d0d0d0;
+        margin-top: 10px;
+        font-size: 0.85em;
+    }
+    
     .stImage {
         border-radius: 8px;
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
@@ -70,6 +81,11 @@ st.markdown("""
             color: #ffffff;
             border-color: #2a5a82;
         }
+        .timestamp-box {
+            background-color: #2b2b2b;
+            color: #ffffff;
+            border-color: #404040;
+        }
     }
     
     /* Force dark mode if Streamlit is in dark theme */
@@ -85,6 +101,12 @@ st.markdown("""
         border-color: #2a5a82;
     }
     
+    [data-testid="stAppViewContainer"][data-theme="dark"] .timestamp-box {
+        background-color: #2b2b2b;
+        color: #ffffff;
+        border-color: #404040;
+    }
+    
     /* Force light mode if Streamlit is in light theme */
     [data-testid="stAppViewContainer"][data-theme="light"] .description-box {
         background-color: #f8f9fa;
@@ -96,6 +118,12 @@ st.markdown("""
         background-color: #e7f3ff;
         color: #000000;
         border-color: #b3d9ff;
+    }
+    
+    [data-testid="stAppViewContainer"][data-theme="light"] .timestamp-box {
+        background-color: #f0f0f0;
+        color: #000000;
+        border-color: #d0d0d0;
     }
     
     /* Navigation styling */
@@ -161,10 +189,19 @@ def parse_cli_args():
 def load_parquet_db(parquet_path: Path) -> pd.DataFrame:
     """Load Parquet database."""
     try:
-        return pd.read_parquet(parquet_path)
+        df = pd.read_parquet(parquet_path)
+        
+        # Ensure datetime columns are properly typed
+        if 'created_at' in df.columns:
+            df['created_at'] = pd.to_datetime(df['created_at'])
+        
+        if 'modified_at' in df.columns:
+            df['modified_at'] = pd.to_datetime(df['modified_at'])
+        
+        return df
     except Exception as e:
         st.error(f"Error loading Parquet database: {str(e)}")
-        return pd.DataFrame(columns=['image_path', 'prompt', 'description'])
+        return pd.DataFrame(columns=['image_path', 'prompt', 'description', 'created_at', 'modified_at'])
 
 
 def save_parquet_db(df: pd.DataFrame, parquet_path: Path) -> bool:
@@ -190,11 +227,27 @@ def create_thumbnail(image_path: Path, max_size: int = 300):
         return None
 
 
+def format_datetime(dt) -> str:
+    """Format datetime for display."""
+    if pd.isna(dt):
+        return "N/A"
+    
+    try:
+        if isinstance(dt, str):
+            dt = pd.to_datetime(dt)
+        
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except:
+        return "N/A"
+
+
 def display_image_with_description(row: pd.Series, index: int, thumbnail_size: int = 300, df_key: str = "main_df"):
     """Display an image with its description."""
     image_path = Path(row['image_path'])
     prompt = row['prompt']
     description = row['description']
+    created_at = row.get('created_at', None)
+    modified_at = row.get('modified_at', None)
     
     edit_key = f"edit_mode_{index}"
     if edit_key not in st.session_state:
@@ -232,6 +285,22 @@ def display_image_with_description(row: pd.Series, index: int, thumbnail_size: i
                 unsafe_allow_html=True
             )
             
+            # Display timestamps if available
+            if created_at is not None or modified_at is not None:
+                timestamp_text = ""
+                if created_at is not None and not pd.isna(created_at):
+                    timestamp_text += f"📅 Created: {format_datetime(created_at)}"
+                if modified_at is not None and not pd.isna(modified_at):
+                    if timestamp_text:
+                        timestamp_text += " | "
+                    timestamp_text += f"✏️ Modified: {format_datetime(modified_at)}"
+                
+                if timestamp_text:
+                    st.markdown(
+                        f'<div class="timestamp-box">{timestamp_text}</div>',
+                        unsafe_allow_html=True
+                    )
+            
             if description and pd.notna(description):
                 st.markdown("### Description")
                 
@@ -251,6 +320,11 @@ def display_image_with_description(row: pd.Series, index: int, thumbnail_size: i
                             df = st.session_state[df_key]
                             mask = df['image_path'] == str(image_path)
                             df.loc[mask, 'description'] = edited_description
+                            
+                            # Update modified_at timestamp
+                            if 'modified_at' in df.columns:
+                                df.loc[mask, 'modified_at'] = pd.Timestamp.now()
+                            
                             st.session_state[df_key] = df
                             
                             if save_parquet_db(df, st.session_state.parquet_path):
@@ -366,18 +440,16 @@ def render_pagination(current_page: int, total_pages: int):
             st.session_state.current_page = total_pages
             st.rerun()
     
-    # THE FIX: Use number_input instead of selectbox to avoid triggering reruns
     with col4:
         st.markdown("")
         if total_pages > 1:
-            # Only update page if user explicitly changes the number input
             page_input = st.number_input(
                 "Jump to page:",
                 min_value=1,
                 max_value=total_pages,
                 value=current_page,
                 step=1,
-                key=f"page_input_{current_page}_{total_pages}",  # Unique key prevents reset
+                key=f"page_input_{current_page}_{total_pages}",
                 label_visibility="collapsed"
             )
             if page_input != current_page:
@@ -430,6 +502,48 @@ def apply_search_filter(df: pd.DataFrame, search_query: str, search_in: str) -> 
             df_copy['prompt'].str.lower().str.contains(search_lower, na=False)
         )
         return df[mask]
+
+
+def apply_sorting(df: pd.DataFrame, sort_option: str) -> pd.DataFrame:
+    """Apply sorting to the dataframe."""
+    if sort_option == "Image Name (A-Z)":
+        return df.sort_values('image_path')
+    elif sort_option == "Image Name (Z-A)":
+        return df.sort_values('image_path', ascending=False)
+    elif sort_option == "Prompt (A-Z)":
+        return df.sort_values('prompt')
+    elif sort_option == "Prompt (Z-A)":
+        return df.sort_values('prompt', ascending=False)
+    elif sort_option == "Created Date (Newest First)":
+        if 'created_at' in df.columns:
+            # Put NaT values at the end
+            return df.sort_values('created_at', ascending=False, na_position='last')
+        else:
+            st.warning("⚠️ 'created_at' column not found in database")
+            return df
+    elif sort_option == "Created Date (Oldest First)":
+        if 'created_at' in df.columns:
+            # Put NaT values at the end
+            return df.sort_values('created_at', ascending=True, na_position='last')
+        else:
+            st.warning("⚠️ 'created_at' column not found in database")
+            return df
+    elif sort_option == "Modified Date (Newest First)":
+        if 'modified_at' in df.columns:
+            # Put NaT values at the end
+            return df.sort_values('modified_at', ascending=False, na_position='last')
+        else:
+            st.warning("⚠️ 'modified_at' column not found in database")
+            return df
+    elif sort_option == "Modified Date (Oldest First)":
+        if 'modified_at' in df.columns:
+            # Put NaT values at the end
+            return df.sort_values('modified_at', ascending=True, na_position='last')
+        else:
+            st.warning("⚠️ 'modified_at' column not found in database")
+            return df
+    else:
+        return df
 
 
 def main():
@@ -505,6 +619,10 @@ def main():
             images_exist = df['exists'].sum()
             images_missing = len(df) - images_exist
             
+            # Check for datetime columns
+            has_created_at = 'created_at' in df.columns
+            has_modified_at = 'modified_at' in df.columns
+            
             st.markdown("---")
             st.markdown("### 📊 Statistics")
             col1, col2 = st.columns(2)
@@ -514,6 +632,14 @@ def main():
             with col2:
                 st.metric("Images Missing", images_missing)
                 st.metric("Unique Prompts", df['prompt'].nunique())
+            
+            # Show datetime statistics if available
+            if has_created_at:
+                valid_created = df['created_at'].notna().sum()
+                if valid_created > 0:
+                    oldest = df['created_at'].min()
+                    newest = df['created_at'].max()
+                    st.caption(f"📅 Date range: {format_datetime(oldest)} to {format_datetime(newest)}")
             
             file_size = parquet_path.stat().st_size / 1024
             if file_size > 1024:
@@ -573,19 +699,33 @@ def main():
             
             st.markdown("---")
             st.markdown("### 📑 Sorting")
+            
+            # Build sort options dynamically based on available columns
+            sort_options = [
+                "Image Name (A-Z)",
+                "Image Name (Z-A)",
+                "Prompt (A-Z)",
+                "Prompt (Z-A)"
+            ]
+            
+            if has_created_at:
+                sort_options.extend([
+                    "Created Date (Newest First)",
+                    "Created Date (Oldest First)"
+                ])
+            
+            if has_modified_at:
+                sort_options.extend([
+                    "Modified Date (Newest First)",
+                    "Modified Date (Oldest First)"
+                ])
+            
             sort_option = st.selectbox(
                 "Sort by",
-                ["Image Name (A-Z)", "Image Name (Z-A)", "Prompt (A-Z)", "Prompt (Z-A)"]
+                sort_options
             )
             
-            if sort_option == "Image Name (A-Z)":
-                filtered_df = filtered_df.sort_values('image_path')
-            elif sort_option == "Image Name (Z-A)":
-                filtered_df = filtered_df.sort_values('image_path', ascending=False)
-            elif sort_option == "Prompt (A-Z)":
-                filtered_df = filtered_df.sort_values('prompt')
-            elif sort_option == "Prompt (Z-A)":
-                filtered_df = filtered_df.sort_values('prompt', ascending=False)
+            filtered_df = apply_sorting(filtered_df, sort_option)
             
             st.markdown("---")
             st.markdown("### 🔎 Search")
@@ -609,7 +749,7 @@ def main():
             if search_query:
                 st.info(f"Found {len(filtered_df)} matching result(s)")
             
-            # THE KEY FIX: Reset page only when filters actually change
+            # Reset page only when filters actually change
             current_filter = (existence_filter, sort_option, search_query, search_in)
             
             if 'last_filter' not in st.session_state:

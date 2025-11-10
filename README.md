@@ -82,6 +82,20 @@ This is a web-based application that provides a gallery view of your images and 
 -   Statistics about your image collection and database.
 -   Pagination for large collections.
 
+### 3. Image Directory Finder (`find_image_dirs.py`)
+
+This is a simple utility script that scans a directory recursively and prints a list of all subdirectories that contain at least one image file (`.jpg`, `.jpeg`, `.png`, or `.webp`). This is useful for identifying which folders you might want to process with the main captioner tool.
+
+#### Usage
+
+```bash
+python find_image_dirs.py /path/to/your/main_folder
+```
+
+**Arguments:**
+
+-   `PATH`: (Required) The root directory path to start scanning from. The script will report all subdirectories under this path that contain images.
+
 ## Workflow
 
 1.  Place all your images in a single directory.

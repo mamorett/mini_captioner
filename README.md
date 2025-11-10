@@ -10,6 +10,7 @@ Mini Captioner is a two-part Python toolset for generating and viewing image des
 -   **Idempotent**: Avoids re-processing images that already have an entry in the database (unless overridden).
 -   **Graceful Exit**: Saves progress automatically if interrupted (Ctrl-C).
 -   **Web Gallery Viewer**: A user-friendly Streamlit application to browse, search, and filter images and their generated descriptions.
+-   **Edit Descriptions**: Directly edit and save changes to image descriptions within the web viewer.
 -   **Easy to Use**: Simple command-line interface and an intuitive web UI.
 
 ## Components
@@ -49,22 +50,30 @@ python captioner.py -d /path/to/your/images -p "A detailed description of this i
 
 ### 2. Streamlit Viewer (`streamlit_viewer.py`)
 
-This is a web-based application that provides a gallery view of your images and their corresponding descriptions by reading from the Parquet database.
+This is a web-based application that provides a gallery view of your images and their corresponding descriptions by reading from the Parquet database. It also allows for editing descriptions directly in the UI.
 
 #### Usage
 
 1.  **Run the Streamlit app:**
 
+    To run with the default database path (`./vision_ai.parquet`):
     ```bash
     streamlit run streamlit_viewer.py
     ```
 
+    To specify a database path via the command line:
+    ```bash
+    streamlit run streamlit_viewer.py -- --database /path/to/your/database.parquet
+    ```
+    *(Note the `--` which is required to pass arguments to the script itself.)*
+
 2.  **Open your browser** to the URL provided by Streamlit (usually `http://localhost:8501`).
 
-3.  **Enter the path** to your Parquet database file in the sidebar to view the gallery. The default path is `./vision_ai.parquet`.
+3.  If you didn't specify a database via the CLI, you can **enter the path** to your Parquet database file in the sidebar to view the gallery.
 
 **Features:**
 
+-   **Edit Mode**: Click the "Edit" button on any entry to modify its description. Changes are saved directly back to the Parquet file.
 -   Side-by-side view of images and their descriptions.
 -   Copy and download descriptions.
 -   Filter images by existence, prompt, or search query.
@@ -80,11 +89,11 @@ This is a web-based application that provides a gallery view of your images and 
     ```bash
     python captioner.py -d /path/to/images -p "A photo of"
     ```
-3.  Run the `streamlit_viewer.py` app.
+3.  Run the `streamlit_viewer.py` app, optionally pointing it to your database.
     ```bash
-    streamlit run streamlit_viewer.py
+    streamlit run streamlit_viewer.py -- --db vision_ai.parquet
     ```
-4.  In the web interface, make sure the path to the Parquet database is correct. The app will then display your images and their newly created descriptions.
+4.  Use the web interface to view, search, and edit your image descriptions.
 
 ## License
 

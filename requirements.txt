@@ -6,3 +6,5 @@ Pillow>=10.0.0
 pyperclip>=1.8.2
 pandas
 pyarrow
+datasets
+huggingface_hub

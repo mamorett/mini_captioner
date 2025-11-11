@@ -373,6 +373,14 @@ def display_image_with_description(row: pd.Series, index: int, thumbnail_size: i
                                 st.session_state[f'show_copy_prompt_{index}'] = True
                     
                     with btn_col4:
+                        if st.button(f"📁 Copy Path", key=f"copy_path_{index}", use_container_width=True):
+                            try:
+                                pyperclip.copy(str(image_path))
+                                st.toast("✓ Path copied!", icon="✅")
+                            except:
+                                st.session_state[f'show_copy_path_{index}'] = True
+                    
+                    with btn_col5:
                         st.download_button(
                             label="💾 Download",
                             data=description,
@@ -398,6 +406,15 @@ def display_image_with_description(row: pd.Series, index: int, thumbnail_size: i
                             key=f"manual_copy_prompt_{index}"
                         )
                     
+                    if st.session_state.get(f'show_copy_path_{index}', False):
+                        st.text_area(
+                            "Select and copy path:",
+                            value=str(image_path),
+                            height=50,
+                            key=f"manual_copy_path_{index}"
+                        )
+
+                    
                     st.caption(f"📝 {len(description)} characters | Full path: {image_path}")
             else:
                 st.warning("⚠️ No description found in database")
@@ -406,13 +423,14 @@ def display_image_with_description(row: pd.Series, index: int, thumbnail_size: i
 
 
 def render_pagination(current_page: int, total_pages: int):
-    """Render pagination controls."""
+    """Render pagination controls with slider."""
     if total_pages <= 1:
         return current_page
     
     st.markdown("---")
     
-    col1, col2, col3, col4, col5, col6, col7 = st.columns([1, 1, 1, 2, 1, 1, 1])
+    # Navigation buttons row
+    col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
     
     with col1:
         if st.button("⏮️ First", use_container_width=True, disabled=(current_page == 1)):
@@ -424,37 +442,29 @@ def render_pagination(current_page: int, total_pages: int):
             st.session_state.current_page = current_page - 1
             st.rerun()
     
-    with col4:
-        st.markdown(
-            f'<div class="page-info">Page {current_page} of {total_pages}</div>',
-            unsafe_allow_html=True
-        )
-    
-    with col6:
+    with col3:
         if st.button("Next ▶️", use_container_width=True, disabled=(current_page == total_pages)):
             st.session_state.current_page = current_page + 1
             st.rerun()
     
-    with col7:
+    with col4:
         if st.button("Last ⏭️", use_container_width=True, disabled=(current_page == total_pages)):
             st.session_state.current_page = total_pages
             st.rerun()
     
-    with col4:
-        st.markdown("")
-        if total_pages > 1:
-            page_input = st.number_input(
-                "Jump to page:",
-                min_value=1,
-                max_value=total_pages,
-                value=current_page,
-                step=1,
-                key=f"page_input_{current_page}_{total_pages}",
-                label_visibility="collapsed"
-            )
-            if page_input != current_page:
-                st.session_state.current_page = page_input
-                st.rerun()
+    # Slider for page navigation - without a static key
+    st.markdown("")  # Small spacing
+    new_page = st.slider(
+        f"📄 Page {current_page} of {total_pages}",
+        min_value=1,
+        max_value=total_pages,
+        value=current_page,
+        step=1
+    )
+    
+    if new_page != current_page:
+        st.session_state.current_page = new_page
+        st.rerun()
     
     return st.session_state.get('current_page', current_page)
 
@@ -773,7 +783,7 @@ def main():
         st.info("No entries match the current filter criteria")
         return
     
-    st.markdown(f"### Showing {len(filtered_df)} entry/entries")
+    # Removed the white box that was here before
     
     total_pages = (len(filtered_df) - 1) // items_per_page + 1
     
@@ -787,8 +797,8 @@ def main():
     start_idx = (current_page - 1) * items_per_page
     end_idx = min(start_idx + items_per_page, len(filtered_df))
     
-    if total_pages > 1:
-        st.info(f"📄 Page {current_page} of {total_pages} | Showing items {start_idx + 1}-{end_idx} of {len(filtered_df)}")
+    # Simple caption instead of info box
+    st.caption(f"Showing items {start_idx + 1}-{end_idx} of {len(filtered_df)}")
     
     page_df = filtered_df.iloc[start_idx:end_idx]
     for idx, row in page_df.iterrows():

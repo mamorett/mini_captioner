@@ -20,6 +20,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import signal
 import sys
+import glob
 
 # Load environment variables from .env file
 load_dotenv()
@@ -306,7 +307,21 @@ def process_image(
         return False, f"Error: {str(e)}", "", {}
 
 
-def get_image_files(directory: Path) -> List[Path]:
+def is_supported_image(file_path: Path) -> bool:
+    """
+    Check if a file is a supported image format.
+    
+    Args:
+        file_path: Path to the file
+        
+    Returns:
+        True if file is a supported image format
+    """
+    supported_extensions = {'.webp', '.png', '.jpg', '.jpeg'}
+    return file_path.suffix.lower() in supported_extensions
+
+
+def get_image_files_from_directory(directory: Path) -> List[Path]:
     """
     Get all supported image files from a directory with full paths.
     
@@ -327,6 +342,124 @@ def get_image_files(directory: Path) -> List[Path]:
     return sorted([img.resolve() for img in image_files])
 
 
+def get_image_files_from_pattern(pattern: str) -> List[Path]:
+    """
+    Get all supported image files matching a glob pattern.
+    
+    Args:
+        pattern: Glob pattern (e.g., "*.jpg", "image?.png", "path/to/*.webp")
+        
+    Returns:
+        List of absolute image file paths
+    """
+    matched_files = glob.glob(pattern, recursive=False)
+    image_files = []
+    
+    for file_path in matched_files:
+        path = Path(file_path).resolve()
+        if path.is_file() and is_supported_image(path):
+            image_files.append(path)
+    
+    return sorted(image_files)
+
+
+def get_image_files_from_list_file(list_file: Path) -> List[Path]:
+    """
+    Get image files from a text file (one file path per line).
+    
+    Args:
+        list_file: Path to text file containing file paths
+        
+    Returns:
+        List of absolute image file paths
+    """
+    image_files = []
+    
+    try:
+        with open(list_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):  # Skip empty lines and comments
+                    continue
+                
+                file_path = Path(line).resolve()
+                if file_path.is_file() and is_supported_image(file_path):
+                    image_files.append(file_path)
+                else:
+                    print(f"⚠ Warning: Skipping invalid or unsupported file: {line}")
+    
+    except Exception as e:
+        print(f"✗ Error reading file list '{list_file}': {str(e)}")
+        return []
+    
+    return sorted(image_files)
+
+
+def collect_image_files(args) -> List[Path]:
+    """
+    Collect image files based on the input arguments.
+    
+    Args:
+        args: Parsed command-line arguments
+        
+    Returns:
+        List of absolute image file paths to process
+    """
+    all_files = []
+    
+    # Priority 1: File list from text file
+    if args.file_list:
+        list_path = Path(args.file_list)
+        if not list_path.exists():
+            print(f"✗ Error: File list '{args.file_list}' does not exist")
+            return []
+        if not list_path.is_file():
+            print(f"✗ Error: '{args.file_list}' is not a file")
+            return []
+        
+        print(f"Reading file list from: {list_path}")
+        all_files = get_image_files_from_list_file(list_path)
+        return all_files
+    
+    # Priority 2: Input path (directory, file, or pattern)
+    if args.input:
+        input_path = Path(args.input)
+        
+        # Check if it's a directory
+        if input_path.exists() and input_path.is_dir():
+            all_files = get_image_files_from_directory(input_path)
+        
+        # Check if it's a single file
+        elif input_path.exists() and input_path.is_file():
+            if is_supported_image(input_path):
+                all_files = [input_path.resolve()]
+            else:
+                print(f"✗ Error: '{args.input}' is not a supported image format")
+                print("Supported formats: .webp, .png, .jpg, .jpeg")
+                return []
+        
+        # Otherwise, treat as a glob pattern
+        else:
+            all_files = get_image_files_from_pattern(args.input)
+            if not all_files:
+                print(f"✗ Error: No matching files found for pattern '{args.input}'")
+                print("Supported formats: .webp, .png, .jpg, .jpeg")
+                return []
+    
+    # Legacy support: --directory flag (for backward compatibility)
+    elif args.directory:
+        input_path = Path(args.directory)
+        if not input_path.exists():
+            print(f"✗ Error: Directory '{args.directory}' does not exist")
+            return []
+        if not input_path.is_dir():
+            print(f"✗ Error: '{args.directory}' is not a directory")
+            return []
+        all_files = get_image_files_from_directory(input_path)
+    
+    return all_files
+
+
 def main():
     """Main function to parse arguments and process images."""
     global new_entries, db_df, parquet_path, override_mode, images_to_process
@@ -335,15 +468,46 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     
     parser = argparse.ArgumentParser(
-        description="Process images with OpenAI-compatible vision model and save to Parquet database"
+        description="Process images with OpenAI-compatible vision model and save to Parquet database",
+        epilog="""
+Examples:
+  # Process all images in a directory
+  %(prog)s -i /path/to/images -p "Describe this image"
+  
+  # Process a single file
+  %(prog)s -i image.jpg -p "Describe this image"
+  
+  # Process files with wildcards
+  %(prog)s -i "*.jpg" -p "Describe this image"
+  %(prog)s -i "image?.png" -p "Describe this image"
+  
+  # Process files from a text file (one path per line)
+  %(prog)s -f filelist.txt -p "Describe this image"
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument(
+    
+    # Create mutually exclusive group for input methods
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument(
+        '--input',
+        '-i',
+        type=str,
+        help='Input: directory, single file, or glob pattern (e.g., *.jpg, image?.png)'
+    )
+    input_group.add_argument(
+        '--file-list',
+        '-f',
+        type=str,
+        help='Text file containing list of image paths (one per line)'
+    )
+    input_group.add_argument(
         '--directory',
         '-d',
         type=str,
-        required=True,
-        help='Directory containing images to process'
+        help='[DEPRECATED] Use --input instead. Directory containing images to process'
     )
+    
     parser.add_argument(
         '--prompt',
         '-p',
@@ -373,22 +537,21 @@ def main():
     
     # Validate environment variables
     if not api_base:
-        print("Error: OPENAI_API_BASE not found in .env file")
+        print("✗ Error: OPENAI_API_BASE not found in .env file")
         return
     if not api_key:
-        print("Error: OPENAI_API_KEY not found in .env file")
+        print("✗ Error: OPENAI_API_KEY not found in .env file")
         return
     if not model_name:
-        print("Error: OPENAI_MODEL_NAME not found in .env file")
+        print("✗ Error: OPENAI_MODEL_NAME not found in .env file")
         return
     
-    # Validate directory
-    input_dir = Path(args.directory).resolve()
-    if not input_dir.exists():
-        print(f"Error: Directory '{args.directory}' does not exist")
-        return
-    if not input_dir.is_dir():
-        print(f"Error: '{args.directory}' is not a directory")
+    # Collect image files based on input method
+    all_image_files = collect_image_files(args)
+    
+    if not all_image_files:
+        print("✗ No supported image files found")
+        print("Supported formats: .webp, .png, .jpg, .jpeg")
         return
     
     # Parse database path and set global variable
@@ -404,9 +567,17 @@ def main():
         api_key=api_key
     )
     
+    # Determine input description for display
+    if args.file_list:
+        input_desc = f"File list: {args.file_list}"
+    elif args.input:
+        input_desc = f"Input: {args.input}"
+    else:
+        input_desc = f"Directory: {args.directory}"
+    
     print(f"Using model: {model_name}")
     print(f"API endpoint: {api_base}")
-    print(f"Input directory: {input_dir}")
+    print(f"{input_desc}")
     print(f"Parquet database: {parquet_path}")
     print(f"Existing entries in database: {len(db_df)}")
     print(f"Override existing: {args.override}")
@@ -414,14 +585,6 @@ def main():
     print(f"Prompt: {args.prompt}")
     print(f"\n💡 Tip: Press Ctrl-C anytime to save progress and exit gracefully")
     print("-" * 60)
-    
-    # Get all image files with full paths
-    all_image_files = get_image_files(input_dir)
-    
-    if not all_image_files:
-        print(f"No supported image files found in '{args.directory}'")
-        print("Supported formats: .webp, .png, .jpg, .jpeg")
-        return
     
     print(f"Found {len(all_image_files)} image(s) total")
     
@@ -442,7 +605,7 @@ def main():
         print(f"Skipping {skipped_count} image(s) already in database")
     
     if not images_to_process:
-        print("\nNo images to process. All images already exist in database.")
+        print("\n✓ No images to process. All images already exist in database.")
         print("Use --override to reprocess all images.")
         return
     

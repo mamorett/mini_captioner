@@ -365,7 +365,7 @@ def get_image_files_from_pattern(pattern: str) -> List[Path]:
 
 def get_image_files_from_list_file(list_file: Path) -> List[Path]:
     """
-    Get image files from a text file (one file path per line).
+    Get image files from a text file (paths can be separated by newlines or spaces).
     
     Args:
         list_file: Path to text file containing file paths
@@ -382,11 +382,12 @@ def get_image_files_from_list_file(list_file: Path) -> List[Path]:
                 if not line or line.startswith('#'):  # Skip empty lines and comments
                     continue
                 
-                file_path = Path(line).resolve()
-                if file_path.is_file() and is_supported_image(file_path):
-                    image_files.append(file_path)
-                else:
-                    print(f"⚠ Warning: Skipping invalid or unsupported file: {line}")
+                for path_str in line.split():
+                    file_path = Path(path_str).resolve()
+                    if file_path.is_file() and is_supported_image(file_path):
+                        image_files.append(file_path)
+                    else:
+                        print(f"⚠ Warning: Skipping invalid or unsupported file: {path_str}")
     
     except Exception as e:
         print(f"✗ Error reading file list '{list_file}': {str(e)}")
@@ -481,7 +482,7 @@ Examples:
   %(prog)s -i "*.jpg" -p "Describe this image"
   %(prog)s -i "image?.png" -p "Describe this image"
   
-  # Process files from a text file (one path per line)
+  # Process files from a text file (paths separated by newlines or spaces)
   %(prog)s -f filelist.txt -p "Describe this image"
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
@@ -499,7 +500,7 @@ Examples:
         '--file-list',
         '-f',
         type=str,
-        help='Text file containing list of image paths (one per line)'
+        help='Text file containing list of image paths (separated by newlines or spaces)'
     )
     input_group.add_argument(
         '--directory',

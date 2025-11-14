@@ -17,7 +17,7 @@ Mini Captioner is a two-part Python toolset for generating and viewing image des
 
 ### 1. Captioner CLI (`captioner.py`)
 
-This command-line tool processes a directory of images, generates a description for each using a vision model, and saves the results to a Parquet database file.
+This command-line tool processes images from various sources, generates a description for each using a vision model, and saves the results to a Parquet database file. It now includes automatic image resizing to 1 megapixel to optimize performance and cost, and tracks creation and modification timestamps for each entry.
 
 #### Setup
 
@@ -37,16 +37,36 @@ This command-line tool processes a directory of images, generates a description 
 
 #### Usage
 
+The tool offers flexible ways to specify input images:
+
+**Process all images in a directory:**
 ```bash
-python captioner.py -d /path/to/your/images -p "A detailed description of this image is:"
+python captioner.py -i /path/to/your/images -p "A detailed description of this image is:"
+```
+
+**Process a single image file:**
+```bash
+python captioner.py -i /path/to/image.jpg -p "A photo of"
+```
+
+**Process images using a glob pattern (wildcards):**
+```bash
+python captioner.py -i "images/*.jpg" -p "A close-up shot of"
+```
+
+**Process a list of image paths from a text file:**
+```bash
+python captioner.py -f /path/to/filelist.txt -p "Describe the contents of this image"
 ```
 
 **Arguments:**
 
--   `--directory`, `-d`: (Required) The directory containing the images to process.
+-   `--input`, `-i`: (Required) The input to process. Can be a directory, a single file, or a glob pattern (e.g., `"*.jpg"`).
+-   `--file-list`, `-f`: (Required) A text file containing a list of image paths to process, with one path per line.
 -   `--prompt`, `-p`: (Required) The prompt to send to the vision model for each image.
 -   `--database`, `--db`: (Optional) The path to the Parquet database file. Defaults to `vision_ai.parquet` in the current directory.
 -   `--override`: (Optional) If set, the script will re-process all images and update their existing entries in the database. By default, it skips images that are already in the database.
+-   `--directory`, `-d`: [DEPRECATED] Use `--input` instead for processing directories.
 
 ### 2. Streamlit Viewer (`streamlit_viewer.py`)
 
@@ -101,7 +121,7 @@ python find_image_dirs.py /path/to/your/main_folder
 1.  Place all your images in a single directory.
 2.  Use the `captioner.py` script to generate descriptions. This will create a `vision_ai.parquet` file (or a custom-named one if you use the `--database` option).
     ```bash
-    python captioner.py -d /path/to/images -p "A photo of"
+    python captioner.py -i /path/to/images -p "A photo of"
     ```
 3.  Run the `streamlit_viewer.py` app, optionally pointing it to your database.
     ```bash

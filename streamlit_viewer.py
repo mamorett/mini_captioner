@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Image Gallery Viewer with Descriptions
 A Streamlit app to view images and their corresponding descriptions from a Parquet database.
@@ -480,36 +479,36 @@ def apply_search_filter(df: pd.DataFrame, search_query: str, search_in: str) -> 
         df_copy = df.copy()
         df_copy['filename'] = df_copy['image_path'].apply(lambda x: Path(x).name.lower())
         mask = (
-            df_copy['filename'].str.contains(search_lower, na=False) |
-            df_copy['description'].fillna('').str.lower().str.contains(search_lower, na=False)
+            df_copy['filename'].str.contains(search_lower, na=False, regex=False) |
+            df_copy['description'].fillna('').str.lower().str.contains(search_lower, na=False, regex=False)
         )
         return df[mask]
     
     elif search_in == "Description":
-        mask = df['description'].fillna('').str.lower().str.contains(search_lower, na=False)
+        mask = df['description'].fillna('').str.lower().str.contains(search_lower, na=False, regex=False)
         return df[mask]
     
     elif search_in == "Filename":
         df_copy = df.copy()
         df_copy['filename'] = df_copy['image_path'].apply(lambda x: Path(x).name.lower())
-        mask = df_copy['filename'].str.contains(search_lower, na=False)
+        mask = df_copy['filename'].str.contains(search_lower, na=False, regex=False)
         return df[mask]
     
     elif search_in == "Full Path":
-        mask = df['image_path'].str.lower().str.contains(search_lower, na=False)
+        mask = df['image_path'].str.lower().str.contains(search_lower, na=False, regex=False)
         return df[mask]
     
     elif search_in == "Prompt":
-        mask = df['prompt'].str.lower().str.contains(search_lower, na=False)
+        mask = df['prompt'].str.lower().str.contains(search_lower, na=False, regex=False)
         return df[mask]
     
     else:  # All
         df_copy = df.copy()
         df_copy['filename'] = df_copy['image_path'].apply(lambda x: Path(x).name.lower())
         mask = (
-            df_copy['description'].fillna('').str.lower().str.contains(search_lower, na=False) |
-            df_copy['image_path'].str.lower().str.contains(search_lower, na=False) |
-            df_copy['prompt'].str.lower().str.contains(search_lower, na=False)
+            df_copy['description'].fillna('').str.lower().str.contains(search_lower, na=False, regex=False) |
+            df_copy['image_path'].str.lower().str.contains(search_lower, na=False, regex=False) |
+            df_copy['prompt'].str.lower().str.contains(search_lower, na=False, regex=False)
         )
         return df[mask]
 

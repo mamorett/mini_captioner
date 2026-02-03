@@ -277,7 +277,7 @@ def process_image(
                     ]
                 }
             ],
-            max_tokens=4096
+            max_tokens=16535
         )
         
         # Extract the response text
@@ -484,6 +484,9 @@ Examples:
   
   # Process files from a text file (paths separated by newlines or spaces)
   %(prog)s -f filelist.txt -p "Describe this image"
+
+  # Process using a prompt from an environment variable
+  %(prog)s -i image.jpg --prompt-env MY_PROMPT_VAR
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -509,12 +512,18 @@ Examples:
         help='[DEPRECATED] Use --input instead. Directory containing images to process'
     )
     
-    parser.add_argument(
+    # Create mutually exclusive group for prompt
+    prompt_group = parser.add_mutually_exclusive_group(required=True)
+    prompt_group.add_argument(
         '--prompt',
         '-p',
         type=str,
-        required=True,
         help='Prompt to send to the vision model for each image'
+    )
+    prompt_group.add_argument(
+        '--prompt-env',
+        type=str,
+        help='Name of environment variable containing the prompt'
     )
     parser.add_argument(
         '--database',
@@ -530,6 +539,15 @@ Examples:
     )
     
     args = parser.parse_args()
+    
+    # Determine prompt from args or env var
+    if args.prompt:
+        image_prompt = args.prompt
+    elif args.prompt_env:
+        image_prompt = os.environ.get(args.prompt_env)
+        if not image_prompt:
+            print(f"✗ Error: Environment variable '{args.prompt_env}' not found or empty")
+            return
     
     # Load environment variables
     api_base = os.getenv('OPENAI_API_BASE')
@@ -583,7 +601,7 @@ Examples:
     print(f"Existing entries in database: {len(db_df)}")
     print(f"Override existing: {args.override}")
     print(f"Image processing: Resizing to 1 megapixel (in memory, maintaining aspect ratio)")
-    print(f"Prompt: {args.prompt}")
+    print(f"Prompt: {image_prompt}")
     print(f"\n💡 Tip: Press Ctrl-C anytime to save progress and exit gracefully")
     print("-" * 60)
     
@@ -629,7 +647,7 @@ Examples:
             
             success, message, description, timestamps = process_image(
                 image_path, 
-                args.prompt, 
+                image_prompt, 
                 client, 
                 model_name,
                 existing_entry,
@@ -641,7 +659,7 @@ Examples:
                 # Add new entry with timestamps
                 new_entries.append({
                     'image_path': str(image_path),
-                    'prompt': args.prompt,
+                    'prompt': image_prompt,
                     'description': description,
                     'created_at': timestamps['created_at'],
                     'modified_at': timestamps['modified_at']

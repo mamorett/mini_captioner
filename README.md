@@ -59,11 +59,18 @@ python captioner.py -i "images/*.jpg" -p "A close-up shot of"
 python captioner.py -f /path/to/filelist.txt -p "Describe the contents of this image"
 ```
 
+**Process using a prompt from an environment variable:**
+```bash
+export MY_PROMPT="Describe this image in detail"
+python captioner.py -i /path/to/image.jpg --prompt-env MY_PROMPT
+```
+
 **Arguments:**
 
--   `--input`, `-i`: (Required) The input to process. Can be a directory, a single file, or a glob pattern (e.g., `"*.jpg"`).
--   `--file-list`, `-f`: (Required) A text file containing a list of image paths to process, with one path per line.
--   `--prompt`, `-p`: (Required) The prompt to send to the vision model for each image.
+-   `--input`, `-i`: (Required for input, unless using `-f`) The input to process. Can be a directory, a single file, or a glob pattern (e.g., `"*.jpg"`).
+-   `--file-list`, `-f`: (Required for input, unless using `-i`) A text file containing a list of image paths to process, with one path per line.
+-   `--prompt`, `-p`: (Required, unless using `--prompt-env`) The prompt to send to the vision model for each image.
+-   `--prompt-env`: (Required, unless using `--prompt`) The name of an environment variable containing the prompt string. Useful for complex prompts or secure usage.
 -   `--database`, `--db`: (Optional) The path to the Parquet database file. Defaults to `vision_ai.parquet` in the current directory.
 -   `--override`: (Optional) If set, the script will re-process all images and update their existing entries in the database. By default, it skips images that are already in the database.
 -   `--directory`, `-d`: [DEPRECATED] Use `--input` instead for processing directories.
@@ -122,6 +129,8 @@ python find_image_dirs.py /path/to/your/main_folder
 2.  Use the `captioner.py` script to generate descriptions. This will create a `vision_ai.parquet` file (or a custom-named one if you use the `--database` option).
     ```bash
     python captioner.py -i /path/to/images -p "A photo of"
+    # OR
+    python captioner.py -i /path/to/images --prompt-env MY_PROMPT_VAR
     ```
 3.  Run the `streamlit_viewer.py` app, optionally pointing it to your database.
     ```bash
